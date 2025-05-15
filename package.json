@@ -1,0 +1,22 @@
+{
+  "name": "manual-library",
+  "version": "1.0.0",
+  "description": "A desktop application for organizing, viewing, and managing vehicle manuals and technical documentation",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "package": "electron-packager . ManualLibrary --platform=win32 --arch=x64 --out=dist/"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "electron-pdf-window": "^1.0.12",
+    "electron-store": "^8.1.0",
+    "pdfjs-dist": "^3.11.174"
+  },
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-packager": "^17.1.2"
+  }
+}

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manual Library</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Left Panel: List of PDF manuals -->
+    <div class="panel left-panel">
+      <div class="panel-header">
+        <h2>Manuals</h2>
+        <button id="select-directory-btn" class="btn">Select Folder</button>
+      </div>
+      <div class="panel-content">
+        <div id="manuals-list" class="manuals-list">
+          <!-- Manuals will be listed here dynamically -->
+          <div class="empty-state">
+            <p>No manuals found</p>
+            <p>Select a folder to scan for PDF manuals</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Panel: PDF Viewer -->
+    <div class="panel center-panel">
+      <div class="panel-header">
+        <h2 id="viewer-title">PDF Viewer</h2>
+        <div class="viewer-controls">
+          <button id="prev-page" class="btn" disabled>Previous</button>
+          <span id="page-info">Page <input type="number" id="current-page" min="1" value="1"> of <span id="page-count">0</span></span>
+          <button id="next-page" class="btn" disabled>Next</button>
+          <button id="zoom-in" class="btn" disabled>Zoom In</button>
+          <button id="zoom-out" class="btn" disabled>Zoom Out</button>
+        </div>
+      </div>
+      <div class="panel-content">
+        <div id="pdf-viewer" class="pdf-viewer">
+          <!-- PDF content will be rendered here -->
+          <div class="empty-state">
+            <p>No PDF selected</p>
+            <p>Select a manual from the list to view</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel: Metadata Editor -->
+    <div class="panel right-panel">
+      <div class="panel-header">
+        <h2>Metadata Editor</h2>
+        <button id="save-metadata-btn" class="btn" disabled>Save Changes</button>
+      </div>
+      <div class="panel-content">
+        <form id="metadata-form" class="metadata-form">
+          <div class="form-group">
+            <label for="title">Title</label>
+            <input type="text" id="title" name="title">
+          </div>
+          <div class="form-group">
+            <label for="brand">Brand</label>
+            <input type="text" id="brand" name="brand">
+          </div>
+          <div class="form-group">
+            <label for="model">Model</label>
+            <input type="text" id="model" name="model">
+          </div>
+          <div class="form-group">
+            <label for="year">Year</label>
+            <input type="text" id="year" name="year">
+          </div>
+          <div class="form-group">
+            <label for="year-range">Year Range</label>
+            <input type="text" id="year-range" name="yearRange" placeholder="e.g. 2010-2015">
+          </div>
+          <div class="form-group">
+            <label for="revision">Revision</label>
+            <input type="text" id="revision" name="revision">
+          </div>
+          <div class="form-group">
+            <label for="type">Type</label>
+            <select id="type" name="type">
+              <option value="">Select a type</option>
+              <option value="service">Service</option>
+              <option value="user manual">User Manual</option>
+              <option value="diagram">Diagram</option>
+              <option value="electrical">Electrical</option>
+              <option value="parts catalog">Parts Catalog</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Tags</label>
+            <div class="tags-container">
+              <label class="tag-item"><input type="checkbox" name="tags" value="roadster"> Roadster</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="cruiser"> Cruiser</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="sportive"> Sportive</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="routiere"> Routiere</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="dual sport"> Dual Sport</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="scooter"> Scooter</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="cyclomoteur"> Cyclomoteur</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="quad"> Quad</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="trike"> Trike</label>
+              <label class="tag-item"><input type="checkbox" name="tags" value="autre"> Autre</label>
+            </div>
+          </div>
+        </form>
+        <div class="preview-container">
+          <h3>Preview</h3>
+          <div id="manual-preview" class="manual-preview">
+            <!-- Preview of the selected manual -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
