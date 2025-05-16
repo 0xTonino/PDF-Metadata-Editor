@@ -176,14 +176,16 @@ async function selectManual(index) {
   selectedManualIndex = index;
   const manual = manuals[index];
   
-  // Load PDF preview
-  await loadPDF(manual.path);
-  
-  // Update form with manual metadata
+  // Start with metadata extracted from filename (as a fallback)
+  // This will be overridden by actual PDF metadata if available
   updateMetadataForm(manual.metadata);
   
   // Enable save button
   saveMetadataBtn.disabled = false;
+  
+  // Load PDF preview and extract its metadata
+  // The loadPDF function will update the form with PDF metadata if available
+  await loadPDF(manual.path);
 }
 
 // Load a PDF file
@@ -196,6 +198,40 @@ async function loadPDF(pdfPath) {
     
     // Update viewer title
     viewerTitle.textContent = path.basename(pdfPath);
+    
+    // Try to extract metadata from the PDF file
+    try {
+      const result = await ipcRenderer.invoke('extract-pdf-metadata', pdfPath);
+      if (result.success && result.metadata) {
+        // Store the extracted metadata for later use
+        if (selectedManualIndex >= 0) {
+          // Merge extracted metadata with existing metadata
+          const extractedMetadata = result.metadata;
+          
+          // Map PDF metadata fields to our application fields
+          const appMetadata = {
+            title: extractedMetadata.title || '',
+            brand: extractedMetadata.author || '', // author → brand
+            model: extractedMetadata.subject || '', // subject → model
+            tags: extractedMetadata.tags || [],
+            // Custom fields extracted from keywords
+            year: extractedMetadata.year || '',
+            yearRange: extractedMetadata.yearRange || '',
+            revision: extractedMetadata.revision || '',
+            type: extractedMetadata.type || ''
+          };
+          
+          // Update the manual's metadata
+          manuals[selectedManualIndex].metadata = appMetadata;
+          
+          // Update the form with the extracted metadata
+          updateMetadataForm(appMetadata);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading PDF metadata:', error);
+      // Continue loading the PDF even if metadata extraction fails
+    }
     
     // Show loading indicator
     const loadingDiv = document.createElement('div');
@@ -313,7 +349,7 @@ function updateMetadataForm(metadata) {
 // Save metadata to the PDF file
 async function saveMetadata(pdfPath) {
   // Get values from form
-  const metadata = {
+  const formMetadata = {
     title: document.getElementById('title').value,
     brand: document.getElementById('brand').value,
     model: document.getElementById('model').value,
@@ -327,32 +363,93 @@ async function saveMetadata(pdfPath) {
   
   // Update manuals array with new metadata
   if (selectedManualIndex >= 0) {
-    manuals[selectedManualIndex].metadata = metadata;
+    manuals[selectedManualIndex].metadata = formMetadata;
     
     // Update the manual item in the list
     const manualItem = document.querySelector(`.manual-item[data-index="${selectedManualIndex}"]`);
     if (manualItem) {
-      manualItem.querySelector('.manual-item-title').textContent = metadata.title || path.basename(manuals[selectedManualIndex].filename, '.pdf');
+      manualItem.querySelector('.manual-item-title').textContent = formMetadata.title || path.basename(manuals[selectedManualIndex].filename, '.pdf');
       
-      if (metadata.type) {
+      if (formMetadata.type) {
         let typeElem = manualItem.querySelector('.manual-item-type');
         if (!typeElem) {
           typeElem = document.createElement('span');
           typeElem.className = 'manual-item-type';
           manualItem.querySelector('.manual-item-header').appendChild(typeElem);
         }
-        typeElem.textContent = metadata.type;
+        typeElem.textContent = formMetadata.type;
       }
       
       manualItem.querySelector('.manual-item-brand-model').textContent = 
-        `${metadata.brand ? metadata.brand : ''} ${metadata.model ? metadata.model : ''} ${metadata.year ? `(${metadata.year})` : ''}`;
+        `${formMetadata.brand ? formMetadata.brand : ''} ${formMetadata.model ? formMetadata.model : ''} ${formMetadata.year ? `(${formMetadata.year})` : ''}`;
+    }
+    
+    // Only try to update metadata in the PDF - don't rename files as that's causing issues
+    // Get the current path which might be different after file operations
+    const currentPath = currentPDFPath || pdfPath;
+    
+    // Verify the file exists before proceeding
+    try {
+      // Check if file exists and is accessible
+      if (!fs.existsSync(currentPath)) {
+        console.error(`File does not exist: ${currentPath}`);
+        alert(`Cannot save metadata: The file does not exist at ${currentPath}`);
+        return; // Exit function early
+      }
+      
+      // Check if the file is currently accessible (not locked)
+      try {
+        // Try opening the file for reading to check if it's accessible
+        const fd = fs.openSync(currentPath, 'r');
+        fs.closeSync(fd);
+      } catch (e) {
+        if (e.code === 'EBUSY') {
+          console.error(`File is currently in use: ${currentPath}`);
+          alert('Cannot save metadata: The PDF file is currently in use by another process. Close all applications that might be using this file and try again.');
+          return; // Exit function early
+        }
+        throw e; // Re-throw other errors
+      }
+      
+      // Update viewer title without renaming file
+      viewerTitle.textContent = path.basename(currentPath);
+      
+    } catch (error) {
+      console.error('Error checking file status:', error);
+      alert(`Error checking file status: ${error.message}`);
+      return; // Exit function early
+    }
+    
+    // Prepare metadata for PDF update
+    // Map form fields to standard PDF metadata fields
+    const pdfMetadata = {
+      title: formMetadata.title,
+      author: formMetadata.brand, // Map 'brand' to PDF 'author' field
+      subject: formMetadata.model, // Map 'model' to PDF 'subject' field
+      keywords: [...(formMetadata.tags || []), formMetadata.type, formMetadata.year].filter(Boolean), // Keep as array
+      producer: 'Manual Library',
+      creator: `Manual Library - ${formMetadata.revision ? 'Rev ' + formMetadata.revision : ''}`,
+      // Add all the requested fields for custom metadata
+      year: formMetadata.year,
+      yearRange: formMetadata.yearRange,
+      revision: formMetadata.revision,
+      type: formMetadata.type
+    };
+    
+    try {
+      // Call IPC handler to update the PDF metadata
+      const result = await ipcRenderer.invoke('update-pdf-metadata', { pdfPath, metadata: pdfMetadata });
+      
+      if (result.success) {
+        alert('Metadata saved successfully to the PDF file!');
+      } else {
+        alert(`Error saving metadata to PDF: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error updating PDF metadata:', error);
+      alert(`Error updating PDF metadata: ${error.message}`);
     }
   }
-  
-  // TODO: Implement actual metadata saving to PDF files
-  // This would require additional libraries for PDF modification
-  // For now, just show a success message
-  alert('Metadata updated. (Note: This version does not save metadata directly to PDF files yet)');
 }
 
 // Extract metadata from filename
