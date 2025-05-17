@@ -384,41 +384,41 @@ async function saveMetadata(pdfPath) {
         `${formMetadata.brand ? formMetadata.brand : ''} ${formMetadata.model ? formMetadata.model : ''} ${formMetadata.year ? `(${formMetadata.year})` : ''}`;
     }
     
-    // Only try to update metadata in the PDF - don't rename files as that's causing issues
     // Get the current path which might be different after file operations
     const currentPath = currentPDFPath || pdfPath;
     
-    // Verify the file exists before proceeding
-    try {
-      // Check if file exists and is accessible
-      if (!fs.existsSync(currentPath)) {
-        console.error(`File does not exist: ${currentPath}`);
-        alert(`Cannot save metadata: The file does not exist at ${currentPath}`);
-        return; // Exit function early
-      }
-      
-      // Check if the file is currently accessible (not locked)
-      try {
-        // Try opening the file for reading to check if it's accessible
-        const fd = fs.openSync(currentPath, 'r');
-        fs.closeSync(fd);
-      } catch (e) {
-        if (e.code === 'EBUSY') {
-          console.error(`File is currently in use: ${currentPath}`);
-          alert('Cannot save metadata: The PDF file is currently in use by another process. Close all applications that might be using this file and try again.');
-          return; // Exit function early
-        }
-        throw e; // Re-throw other errors
-      }
-      
-      // Update viewer title without renaming file
-      viewerTitle.textContent = path.basename(currentPath);
-      
-    } catch (error) {
-      console.error('Error checking file status:', error);
-      alert(`Error checking file status: ${error.message}`);
+    // Check if file exists and is accessible
+    if (!fs.existsSync(currentPath)) {
+      console.error(`File does not exist: ${currentPath}`);
+      alert(`Cannot save metadata: The file does not exist at ${currentPath}`);
       return; // Exit function early
     }
+    
+    // Prepare for file renaming if title has changed
+    let newFilePath = currentPath;
+    let shouldRename = false;
+    
+    if (formMetadata.title && formMetadata.title.trim() !== '') {
+      // Create a safe filename from the title
+      const sanitizedTitle = formMetadata.title.replace(/[\\/:*?"<>|]/g, '_').trim();
+      if (sanitizedTitle) {
+        const dir = path.dirname(currentPath);
+        const ext = path.extname(currentPath);
+        const originalBasename = path.basename(currentPath, ext);
+        
+        // Generate new file path
+        const proposedPath = path.join(dir, sanitizedTitle + ext);
+        
+        // Only rename if the name would actually change (case-insensitive comparison)
+        if (proposedPath.toLowerCase() !== currentPath.toLowerCase()) {
+          newFilePath = proposedPath;
+          shouldRename = true;
+        }
+      }
+    }
+    
+    // First save the metadata to the current file
+    // Only afterward will we try to rename it
     
     // Prepare metadata for PDF update
     // Map form fields to standard PDF metadata fields
@@ -426,7 +426,7 @@ async function saveMetadata(pdfPath) {
       title: formMetadata.title,
       author: formMetadata.brand, // Map 'brand' to PDF 'author' field
       subject: formMetadata.model, // Map 'model' to PDF 'subject' field
-      keywords: [...(formMetadata.tags || []), formMetadata.type, formMetadata.year].filter(Boolean), // Keep as array
+      keywords: formMetadata.tags || [], // Just send tags as an array, main.js will handle formatting
       producer: 'Manual Library',
       creator: `Manual Library - ${formMetadata.revision ? 'Rev ' + formMetadata.revision : ''}`,
       // Add all the requested fields for custom metadata
@@ -437,13 +437,61 @@ async function saveMetadata(pdfPath) {
     };
     
     try {
-      // Call IPC handler to update the PDF metadata
-      const result = await ipcRenderer.invoke('update-pdf-metadata', { pdfPath, metadata: pdfMetadata });
+      // Step 1: Call IPC handler to update the PDF metadata
+      const result = await ipcRenderer.invoke('update-pdf-metadata', { pdfPath: currentPath, metadata: pdfMetadata });
       
-      if (result.success) {
-        alert('Metadata saved successfully to the PDF file!');
-      } else {
+      if (!result.success) {
         alert(`Error saving metadata to PDF: ${result.error}`);
+        return;
+      }
+      
+      // Step 2: If we need to rename the file, do it now that the PDF is saved
+      if (shouldRename) {
+        try {
+          // Before renaming, ensure we release all handles to the file
+          // This is important to prevent EBUSY errors
+          if (currentPDFDoc) {
+            currentPDFDoc.cleanup?.();
+            currentPDFDoc = null;
+          }
+          
+          // Use IPC to rename the file (more reliable than direct fs operations in renderer)
+          const renameResult = await ipcRenderer.invoke('rename-pdf-file', { 
+            oldPath: currentPath, 
+            newPath: newFilePath 
+          });
+          
+          if (renameResult.success) {
+            // Update all references to this file
+            manuals[selectedManualIndex].path = newFilePath;
+            manuals[selectedManualIndex].filename = path.basename(newFilePath);
+            currentPDFPath = newFilePath;
+            
+            // Update UI
+            viewerTitle.textContent = path.basename(newFilePath);
+            
+            // Update the list item
+            const manualItem = document.querySelector(`.manual-item[data-index="${selectedManualIndex}"]`);
+            if (manualItem) {
+              manualItem.querySelector('.manual-item-title').textContent = formMetadata.title;
+            }
+            
+            // Re-load the PDF to update the view
+            await loadPDF(newFilePath);
+            
+            alert(`Metadata saved and file renamed successfully to: ${path.basename(newFilePath)}`);
+          } else {
+            // If rename failed but metadata was saved, still show a success message for metadata
+            console.error('Error renaming file:', renameResult.error);
+            alert(`Metadata was saved, but couldn't rename the file: ${renameResult.error}`);
+          }
+        } catch (renameError) {
+          console.error('Error in rename process:', renameError);
+          alert(`Metadata was saved, but couldn't rename the file: ${renameError.message}`);
+        }
+      } else {
+        // No renaming needed, just show success message
+        alert('Metadata saved successfully to the PDF file!');
       }
     } catch (error) {
       console.error('Error updating PDF metadata:', error);

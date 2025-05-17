@@ -92,40 +92,28 @@ ipcMain.handle('update-pdf-metadata', async (event, { pdfPath, metadata }) => {
     if (metadata.author) pdfDoc.setAuthor(metadata.author);
     if (metadata.subject) pdfDoc.setSubject(metadata.subject);
     
-    // Clear existing keywords and create a fresh set with consistent ordering
-    // Start with regular tags in alphabetical order
-    let orderedKeywords = [];
+    // Format keywords as a consistently formatted string within an array
+    // The string will include all fields in a fixed order, even if they're empty
+    // Format: ["Year: 2008, Years range: , Type: Service, Tags: Cruiser"]
     
-    // First add any regular tags (sorted alphabetically)
+    // Extract tags from keywords array (if present)
+    let tags = [];
     if (metadata.keywords && Array.isArray(metadata.keywords)) {
-      // Filter out any custom field pairs that might have been mixed in
-      const regularTags = metadata.keywords.filter(kw => !kw.match(/^\w+:\s*.+$/));
-      orderedKeywords = [...regularTags].sort();
+      // Extract any regular tags that don't follow the key-value format
+      tags = metadata.keywords.filter(kw => !kw.match(/^\w+:\s*.+$/));
     }
     
-    // Then add custom fields in a specific, consistent order
-    // Format all custom fields with the same structure: "Field: value"
-    const customFieldsOrder = [
-      { key: 'Type', value: metadata.type },
-      { key: 'Year', value: metadata.year },
-      { key: 'YearRange', value: metadata.yearRange },
-      { key: 'Revision', value: metadata.revision }
-    ];
+    // Build a fixed-format string with all required fields in specified order
+    const formattedKeywordsStr = [
+      `Year: ${metadata.year || ''}`, 
+      `Years range: ${metadata.yearRange || ''}`, 
+      `Type: ${metadata.type || ''}`,
+      `Tags: ${tags.join(', ') || ''}`
+    ].join(', ');
     
-    // Add formatted custom fields in our predefined order
-    customFieldsOrder.forEach(field => {
-      if (field.value) {
-        orderedKeywords.push(`${field.key}: ${field.value}`);
-      }
-    });
-    
-    // Set the keywords with our consistently ordered array
-    if (orderedKeywords.length > 0) {
-      pdfDoc.setKeywords(orderedKeywords);
-    } else {
-      // If no keywords, set an empty array to clear existing keywords
-      pdfDoc.setKeywords([]);
-    }
+    // Set the keywords as an array containing our formatted string
+    // This maintains the array type that pdf-lib expects while keeping our format
+    pdfDoc.setKeywords([formattedKeywordsStr]);
     
     if (metadata.producer) pdfDoc.setProducer(metadata.producer);
     if (metadata.creator) pdfDoc.setCreator(metadata.creator);
@@ -170,50 +158,152 @@ ipcMain.handle('scan-directory-for-pdfs', async (event, directoryPath) => {
 });
 
 // Handler to extract PDF metadata
+// Handler for renaming PDF files
+ipcMain.handle('rename-pdf-file', async (event, { oldPath, newPath }) => {
+  try {
+    // Check if source file exists
+    if (!fs.existsSync(oldPath)) {
+      return { success: false, error: `Source file does not exist: ${oldPath}` };
+    }
+    
+    // Check if target path is different
+    if (oldPath === newPath) {
+      return { success: true, message: 'File paths are identical, no rename needed' };
+    }
+    
+    // Check if target directory exists
+    const targetDir = path.dirname(newPath);
+    if (!fs.existsSync(targetDir)) {
+      // Create directory if it doesn't exist
+      try {
+        fs.mkdirSync(targetDir, { recursive: true });
+      } catch (mkdirError) {
+        return { success: false, error: `Could not create target directory: ${mkdirError.message}` };
+      }
+    }
+    
+    // Check if target file already exists
+    if (fs.existsSync(newPath)) {
+      // Generate a unique filename by adding a number suffix
+      let counter = 1;
+      const ext = path.extname(newPath);
+      const baseName = path.basename(newPath, ext);
+      const dir = path.dirname(newPath);
+      
+      let uniquePath = newPath;
+      while (fs.existsSync(uniquePath)) {
+        uniquePath = path.join(dir, `${baseName}_${counter}${ext}`);
+        counter++;
+        
+        // Safety check to prevent infinite loops
+        if (counter > 100) {
+          return { success: false, error: 'Could not generate a unique filename after 100 attempts' };
+        }
+      }
+      
+      newPath = uniquePath;
+    }
+    
+    // Perform the rename operation
+    try {
+      fs.renameSync(oldPath, newPath);
+      return { success: true, newPath };
+    } catch (renameError) {
+      // If direct rename fails (possibly due to different volumes), try copy and delete
+      if (renameError.code === 'EXDEV') {
+        try {
+          // Copy file contents
+          fs.copyFileSync(oldPath, newPath);
+          
+          // Verify copy was successful
+          if (fs.existsSync(newPath)) {
+            // Delete original file
+            fs.unlinkSync(oldPath);
+            return { success: true, newPath };
+          } else {
+            return { success: false, error: 'Copy succeeded but target file not found' };
+          }
+        } catch (copyError) {
+          return { success: false, error: `Copy operation failed: ${copyError.message}` };
+        }
+      } else {
+        return { success: false, error: `Rename operation failed: ${renameError.message}` };
+      }
+    }
+  } catch (error) {
+    console.error('Error renaming file:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('extract-pdf-metadata', async (event, pdfPath) => {
   try {
     const existingPdfBytes = fs.readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
     
-    // Get standard metadata
+    // Get the metadata
     const metadata = {
       title: pdfDoc.getTitle() || '',
       author: pdfDoc.getAuthor() || '',
       subject: pdfDoc.getSubject() || '',
+      producer: pdfDoc.getProducer() || '',
+      creator: pdfDoc.getCreator() || '',
       keywords: pdfDoc.getKeywords() || []
     };
     
     // Initialize tags array and custom fields
     metadata.tags = [];
+    metadata.year = '';
+    metadata.yearRange = '';
+    metadata.revision = '';
+    metadata.type = '';
+    
+    console.log('Raw PDF keywords:', JSON.stringify(metadata.keywords));
     
     // Parse keyword field for our custom metadata
-    if (Array.isArray(metadata.keywords)) {
-      metadata.keywords.forEach(keyword => {
-        // Look for custom fields formatted as "Field: Value"
-        const match = keyword.match(/^(\w+):\s*(.+)$/);
+    // Only handling our standard format: "Year: Value, Years range: Value, Type: Value, Tags: Value(s)"
+    if (Array.isArray(metadata.keywords) && metadata.keywords.length > 0) {
+      // Get the string from the array
+      const formattedString = metadata.keywords[0];
+      console.log('Metadata string:', formattedString);
+      
+      // Split by comma and process each field
+      const fields = formattedString.split(', ');
+      console.log('Split fields:', fields);
+      
+      // Process each field
+      fields.forEach(field => {
+        // Extract key-value pairs
+        const match = field.match(/^([^:]+):\s*(.*)$/);
         if (match) {
-          const [, field, value] = match;
-          // Store custom field values in their own properties
-          switch (field) {
+          const [, fieldName, fieldValue] = match;
+          console.log(`Extracted field: ${fieldName} = '${fieldValue}'`);
+          
+          // Process known fields
+          switch (fieldName.trim()) {
             case 'Year':
-              metadata.year = value;
+              metadata.year = fieldValue.trim();
               break;
-            case 'YearRange':
-              metadata.yearRange = value;
-              break;
-            case 'Revision':
-              metadata.revision = value;
+            case 'Years range':
+              metadata.yearRange = fieldValue.trim();
               break;
             case 'Type':
-              metadata.type = value;
+              metadata.type = fieldValue.trim();
+              break;
+            case 'Tags':
+              // Split tags by comma if they exist
+              if (fieldValue.trim()) {
+                metadata.tags = fieldValue.split(', ').map(tag => tag.trim());
+              }
+              break;
+            case 'Revision':
+              metadata.revision = fieldValue.trim();
               break;
             default:
-              // Unknown custom field, store it in the tags array
-              metadata.tags.push(keyword);
+              console.log(`Unknown metadata field: ${fieldName}`);
           }
         } else {
-          // This is a regular keyword/tag
-          metadata.tags.push(keyword);
+          console.log(`Could not parse field: ${field}`);
         }
       });
     }
