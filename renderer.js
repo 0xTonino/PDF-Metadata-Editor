@@ -33,6 +33,9 @@ let selectedManualIndex = -1;
 let pageRendering = false;
 let pageNumPending = null;
 
+// Global variable to store the currently loaded PDF's metadata (from JSON or fallback)
+let currentManualData = {}; // Initialize as an empty object
+
 // Initialize the application
 async function initApp() {
   // Try to load saved directories
@@ -97,9 +100,7 @@ function setupEventListeners() {
   
   // Save metadata button
   saveMetadataBtn.addEventListener('click', async () => {
-    if (selectedManualIndex >= 0) {
-      await saveMetadata(manuals[selectedManualIndex].path);
-    }
+    await saveMetadata(); // New call, uses global currentPDFPath and selectedManualIndex
   });
 }
 
@@ -185,11 +186,11 @@ async function selectManual(index) {
   
   // Load PDF preview and extract its metadata
   // The loadPDF function will update the form with PDF metadata if available
-  await loadPDF(manual.path);
+  await loadPDF(manual.path, manual);
 }
 
 // Load a PDF file
-async function loadPDF(pdfPath) {
+async function loadPDF(pdfPath, manualObject) {
   try {
     currentPDFPath = pdfPath;
     
@@ -199,38 +200,36 @@ async function loadPDF(pdfPath) {
     // Update viewer title
     viewerTitle.textContent = path.basename(pdfPath);
     
-    // Try to extract metadata from the PDF file
+    // Attempt to load metadata from companion JSON file
+    const jsonFilePath = pdfPath.replace(/\.pdf$/i, '.json');
+    let jsonData = null;
     try {
-      const result = await ipcRenderer.invoke('extract-pdf-metadata', pdfPath);
-      if (result.success && result.metadata) {
-        // Store the extracted metadata for later use
-        if (selectedManualIndex >= 0) {
-          // Merge extracted metadata with existing metadata
-          const extractedMetadata = result.metadata;
-          
-          // Map PDF metadata fields to our application fields
-          const appMetadata = {
-            title: extractedMetadata.title || '',
-            brand: extractedMetadata.author || '', // author → brand
-            model: extractedMetadata.subject || '', // subject → model
-            tags: extractedMetadata.tags || [],
-            // Custom fields extracted from keywords
-            year: extractedMetadata.year || '',
-            yearRange: extractedMetadata.yearRange || '',
-            revision: extractedMetadata.revision || '',
-            type: extractedMetadata.type || ''
-          };
-          
-          // Update the manual's metadata
-          manuals[selectedManualIndex].metadata = appMetadata;
-          
-          // Update the form with the extracted metadata
-          updateMetadataForm(appMetadata);
-        }
+      console.log(`Attempting to read JSON metadata from: ${jsonFilePath}`);
+      const readResult = await ipcRenderer.invoke('read-json-file', jsonFilePath);
+      if (readResult.success) {
+        jsonData = readResult.data;
+      } else {
+        console.warn(`Failed to read JSON metadata from ${jsonFilePath}: ${readResult.error}`);
+        jsonData = null;
       }
     } catch (error) {
-      console.error('Error loading PDF metadata:', error);
-      // Continue loading the PDF even if metadata extraction fails
+      console.warn(`Error invoking 'read-json-file' for ${jsonFilePath}: ${error.message}`);
+      jsonData = null; // Ensure jsonData is null on error
+    }
+
+    if (jsonData) {
+      console.log('Successfully loaded metadata from JSON:', jsonData);
+      if (manualObject) {
+        manualObject.metadata = { ...jsonData }; // Update the manual's metadata store with a copy
+      }
+      updateMetadataForm(jsonData);
+    } else {
+      // Fallback: if JSON not found/error, use metadata from manualObject (filename extraction) or clear form
+      if (manualObject && manualObject.metadata) {
+        updateMetadataForm(manualObject.metadata); 
+      } else {
+        updateMetadataForm({}); // Clear form if no metadata at all
+      }
     }
     
     // Show loading indicator
@@ -321,182 +320,260 @@ async function renderPage(pageNum) {
 
 // Update metadata form with the given metadata
 function updateMetadataForm(metadata) {
-  document.getElementById('title').value = metadata.title || '';
-  document.getElementById('brand').value = metadata.brand || '';
-  document.getElementById('model').value = metadata.model || '';
-  document.getElementById('year').value = metadata.year || '';
-  document.getElementById('year-range').value = metadata.yearRange || '';
-  document.getElementById('revision').value = metadata.revision || '';
-  document.getElementById('type').value = metadata.type || '';
+  currentManualData = metadata || {}; // Store the loaded metadata globally for this session
+  const m = currentManualData; // Use a shorthand
+
+  document.getElementById('title').value = m.title || '';
+  document.getElementById('brand').value = m.brand || '';
+  document.getElementById('model').value = m.model || '';
+  document.getElementById('year').value = m.year || '';
   
-  // Clear all checkboxes first
-  const checkboxes = document.querySelectorAll('input[name="tags"]');
-  checkboxes.forEach(checkbox => {
-    checkbox.checked = false;
+  // Removed year-range and revision population
+  // document.getElementById('year-range').value = m.yearRange || '';
+  // document.getElementById('revision').value = m.revision || '';
+
+  document.getElementById('manualType').value = m.manualType || '';
+  
+  // Bike Type - Checkboxes
+  const bikeTypeCheckboxes = document.querySelectorAll('input[name="bikeType"]');
+  bikeTypeCheckboxes.forEach(checkbox => {
+    checkbox.checked = false; // Reset all checkboxes
   });
-  
-  // Check the ones that match tags in metadata
-  if (metadata.tags && Array.isArray(metadata.tags)) {
-    metadata.tags.forEach(tag => {
-      const checkbox = document.querySelector(`input[name="tags"][value="${tag}"]`);
-      if (checkbox) {
-        checkbox.checked = true;
-      }
+  if (m.bikeType && Array.isArray(m.bikeType)) {
+    m.bikeType.forEach(type => {
+      const checkbox = document.querySelector(`input[name="bikeType"][value="${type}"]`);
+      if (checkbox) checkbox.checked = true;
     });
   }
+
+  // Language - Dropdown
+  document.getElementById('language').value = m.language || '';
+  
+  document.getElementById('tags').value = m.tags && Array.isArray(m.tags) ? m.tags.join(', ') : '';
+  document.getElementById('description').value = m.description || '';
+
+  saveMetadataBtn.disabled = !currentPDFPath;
 }
 
-// Save metadata to the PDF file
-async function saveMetadata(pdfPath) {
-  // Get values from form
-  const formMetadata = {
-    title: document.getElementById('title').value,
-    brand: document.getElementById('brand').value,
-    model: document.getElementById('model').value,
-    year: document.getElementById('year').value,
-    yearRange: document.getElementById('year-range').value,
-    revision: document.getElementById('revision').value,
-    type: document.getElementById('type').value,
-    tags: Array.from(document.querySelectorAll('input[name="tags"]:checked'))
-      .map(checkbox => checkbox.value)
-  };
+// Save metadata to the JSON file
+async function saveMetadata() { 
+  if (!currentPDFPath || selectedManualIndex < 0) {
+    console.error('No PDF selected or invalid index. Cannot save metadata.');
+    alert('Error: No PDF selected or an internal error occurred.');
+    return;
+  }
+
+  // Generate a unique ID if one doesn't exist for this manual yet
+  let manualId = currentManualData.id;
+  if (!manualId) {
+    manualId = Date.now().toString(36) + Math.random().toString(36).substring(2, 9); // Longer random part
+    console.log(`Generated new ID for manual: ${manualId}`);
+  }
+
+  // Collect data from the form
+  const title = document.getElementById('title').value.trim();
+  const brand = document.getElementById('brand').value.trim();
+  const model = document.getElementById('model').value.trim();
+  const year = parseInt(document.getElementById('year').value, 10) || null; // Ensure year is a number or null
+  const manualType = document.getElementById('manualType').value.trim();
   
-  // Update manuals array with new metadata
-  if (selectedManualIndex >= 0) {
-    manuals[selectedManualIndex].metadata = formMetadata;
-    
-    // Update the manual item in the list
-    const manualItem = document.querySelector(`.manual-item[data-index="${selectedManualIndex}"]`);
-    if (manualItem) {
-      manualItem.querySelector('.manual-item-title').textContent = formMetadata.title || path.basename(manuals[selectedManualIndex].filename, '.pdf');
-      
-      if (formMetadata.type) {
-        let typeElem = manualItem.querySelector('.manual-item-type');
-        if (!typeElem) {
-          typeElem = document.createElement('span');
-          typeElem.className = 'manual-item-type';
-          manualItem.querySelector('.manual-item-header').appendChild(typeElem);
-        }
-        typeElem.textContent = formMetadata.type;
-      }
-      
-      manualItem.querySelector('.manual-item-brand-model').textContent = 
-        `${formMetadata.brand ? formMetadata.brand : ''} ${formMetadata.model ? formMetadata.model : ''} ${formMetadata.year ? `(${formMetadata.year})` : ''}`;
+  // Collect Bike Types from checkboxes
+  const selectedBikeTypes = [];
+  document.querySelectorAll('input[name="bikeType"]:checked').forEach(checkbox => {
+    selectedBikeTypes.push(checkbox.value);
+  });
+
+  const language = document.getElementById('language').value;
+  const tagsString = document.getElementById('tags').value.trim();
+  const description = document.getElementById('description').value.trim();
+
+  // Convert tags string to array, handling empty strings and extra spaces
+  const tags = tagsString ? tagsString.split(',').map(tag => tag.trim()).filter(tag => tag) : [];
+
+  if (!title) {
+    alert('Title is a required field.');
+    return;
+  }
+
+  // Consolidate metadata: merge form data with existing non-form data from currentManualData
+  const metadataFromForm = {
+    title,
+    brand,
+    model,
+    year,
+    manualType,
+    bikeType: selectedBikeTypes,
+    language,
+    tags,
+    description
+  };
+
+  const finalMetadataForJson = {
+    ...currentManualData, // Includes existing id, pdfSignatureAdded (if any) from initial load
+    ...metadataFromForm,  // Overwrites with form values for shared fields
+    id: manualId          // Explicitly use the determined manualId (newly generated or existing)
+  };
+
+  // Update currentManualData with the new ID if it was just generated
+  // currentManualData.id = manualId; // This is now handled by the spread into finalMetadataForJson and subsequent assignment
+  // Also update with other potentially changed fields before any renaming happens
+  // This ensures that if renaming fails, the form still reflects what was attempted to be saved.
+  // However, the primary source of truth for the form should be what's successfully written to JSON.
+  // For now, we'll rely on a successful save then reload for consistency, or update currentManualData after successful save.
+
+  // --- Filename Generation and Renaming Logic (if title changed) ---
+  // Construct new filename based on title, brand, model, year, language
+  let newSanitizedFilenameComponent = '';
+  if (title) {
+    newSanitizedFilenameComponent = title.replace(/[\s\/\?%\*:\|"<>]+/g, '_').replace(/[^a-zA-Z0-9_\.\-]+/g, '');
+    if (!newSanitizedFilenameComponent) { // Handle cases where sanitization results in an empty string
+        newSanitizedFilenameComponent = 'Untitled_Manual';
     }
-    
-    // Get the current path which might be different after file operations
-    const currentPath = currentPDFPath || pdfPath;
-    
-    // Check if file exists and is accessible
-    if (!fs.existsSync(currentPath)) {
-      console.error(`File does not exist: ${currentPath}`);
-      alert(`Cannot save metadata: The file does not exist at ${currentPath}`);
-      return; // Exit function early
-    }
-    
-    // Prepare for file renaming if title has changed
-    let newFilePath = currentPath;
-    let shouldRename = false;
-    
-    if (formMetadata.title && formMetadata.title.trim() !== '') {
-      // Create a safe filename from the title
-      const sanitizedTitle = formMetadata.title.replace(/[\\/:*?"<>|]/g, '_').trim();
-      if (sanitizedTitle) {
-        const dir = path.dirname(currentPath);
-        const ext = path.extname(currentPath);
-        const originalBasename = path.basename(currentPath, ext);
-        
-        // Generate new file path
-        const proposedPath = path.join(dir, sanitizedTitle + ext);
-        
-        // Only rename if the name would actually change (case-insensitive comparison)
-        if (proposedPath.toLowerCase() !== currentPath.toLowerCase()) {
-          newFilePath = proposedPath;
-          shouldRename = true;
-        }
-      }
-    }
-    
-    // First save the metadata to the current file
-    // Only afterward will we try to rename it
-    
-    // Prepare metadata for PDF update
-    // Map form fields to standard PDF metadata fields
-    const pdfMetadata = {
-      title: formMetadata.title,
-      author: formMetadata.brand, // Map 'brand' to PDF 'author' field
-      subject: formMetadata.model, // Map 'model' to PDF 'subject' field
-      keywords: formMetadata.tags || [], // Just send tags as an array, main.js will handle formatting
-      producer: 'Manual Library',
-      creator: `Manual Library - ${formMetadata.revision ? 'Rev ' + formMetadata.revision : ''}`,
-      // Add all the requested fields for custom metadata
-      year: formMetadata.year,
-      yearRange: formMetadata.yearRange,
-      revision: formMetadata.revision,
-      type: formMetadata.type
-    };
-    
-    try {
-      // Step 1: Call IPC handler to update the PDF metadata
-      const result = await ipcRenderer.invoke('update-pdf-metadata', { pdfPath: currentPath, metadata: pdfMetadata });
+  } else {
+    // If title is empty, use the existing filename base
+    newSanitizedFilenameComponent = path.basename(currentPDFPath, '.pdf');
+  }
+
+  const directory = path.dirname(currentPDFPath);
+  const newProposedPdfFilename = newSanitizedFilenameComponent + '.pdf';
+  let newPdfPath = path.join(directory, newProposedPdfFilename);
+
+  const oldJsonFilePath = currentPDFPath.replace(/\.pdf$/i, '.json');
+  let newJsonFilePath = newPdfPath.replace(/\.pdf$/i, '.json');
+
+  try {
+    let pdfPathToSaveJsonTo = currentPDFPath; // Path to use for JSON if PDF isn't renamed
+
+    // --- PDF Renaming Logic --- 
+    if (newPdfPath.toLowerCase() !== currentPDFPath.toLowerCase()) {
+      console.log(`PDF filename change proposed: from ${path.basename(currentPDFPath)} to ${newProposedPdfFilename}`);
       
-      if (!result.success) {
-        alert(`Error saving metadata to PDF: ${result.error}`);
+      const checkFileResult = await ipcRenderer.invoke('check-file-exists', newPdfPath);
+      if (!checkFileResult.success) {
+        alert(`Error checking file existence: ${checkFileResult.error}`);
         return;
       }
-      
-      // Step 2: If we need to rename the file, do it now that the PDF is saved
-      if (shouldRename) {
-        try {
-          // Before renaming, ensure we release all handles to the file
-          // This is important to prevent EBUSY errors
-          if (currentPDFDoc) {
-            currentPDFDoc.cleanup?.();
-            currentPDFDoc = null;
+      if (checkFileResult.exists) {
+        alert(`Error: A file named "${newProposedPdfFilename}" already exists in this directory. Please choose a different title or rename the existing file.`);
+        return;
+      }
+
+      // Rename PDF
+      console.log(`Attempting to rename PDF from ${currentPDFPath} to ${newPdfPath}`);
+      const renamePdfResult = await ipcRenderer.invoke('rename-file', { oldPath: currentPDFPath, newPath: newPdfPath });
+      if (!renamePdfResult.success) {
+        alert(`Error renaming PDF: ${renamePdfResult.error}. Metadata not saved.`);
+        return;
+      }
+      console.log(`PDF renamed successfully to ${newPdfPath}`);
+      pdfPathToSaveJsonTo = newPdfPath; // JSON will be associated with the new PDF path
+
+      // Rename old JSON file if it exists
+      try {
+        const oldJsonExists = await ipcRenderer.invoke('check-file-exists', oldJsonFilePath);
+        if (oldJsonExists.exists) {
+          console.log(`Attempting to rename old JSON from ${oldJsonFilePath} to ${newJsonFilePath}`);
+          const renameJsonResult = await ipcRenderer.invoke('rename-file', { oldPath: oldJsonFilePath, newPath: newJsonFilePath });
+          if (!renameJsonResult.success) {
+            // Non-critical error, log it. The new JSON will be created anyway.
+            console.warn(`Could not rename old JSON file: ${renameJsonResult.error}`);
           }
-          
-          // Use IPC to rename the file (more reliable than direct fs operations in renderer)
-          const renameResult = await ipcRenderer.invoke('rename-pdf-file', { 
-            oldPath: currentPath, 
-            newPath: newFilePath 
-          });
-          
-          if (renameResult.success) {
-            // Update all references to this file
-            manuals[selectedManualIndex].path = newFilePath;
-            manuals[selectedManualIndex].filename = path.basename(newFilePath);
-            currentPDFPath = newFilePath;
-            
-            // Update UI
-            viewerTitle.textContent = path.basename(newFilePath);
-            
-            // Update the list item
-            const manualItem = document.querySelector(`.manual-item[data-index="${selectedManualIndex}"]`);
-            if (manualItem) {
-              manualItem.querySelector('.manual-item-title').textContent = formMetadata.title;
-            }
-            
-            // Re-load the PDF to update the view
-            await loadPDF(newFilePath);
-            
-            alert(`Metadata saved and file renamed successfully to: ${path.basename(newFilePath)}`);
-          } else {
-            // If rename failed but metadata was saved, still show a success message for metadata
-            console.error('Error renaming file:', renameResult.error);
-            alert(`Metadata was saved, but couldn't rename the file: ${renameResult.error}`);
-          }
-        } catch (renameError) {
-          console.error('Error in rename process:', renameError);
-          alert(`Metadata was saved, but couldn't rename the file: ${renameError.message}`);
+        } else {
+          console.log(`Old JSON file ${oldJsonFilePath} not found, no need to rename.`);
+        }
+      } catch (e) {
+        console.warn(`Error during old JSON file rename check/process: ${e.message}`);
+      }
+
+      // Update currentPDFPath and manual object to reflect the rename
+      currentPDFPath = newPdfPath;
+      currentManualData.filename = path.basename(newPdfPath); 
+    } else {
+      // If PDF name hasn't changed, newJsonFilePath should still be based on currentPDFPath
+      newJsonFilePath = currentPDFPath.replace(/\.pdf$/i, '.json');
+      pdfPathToSaveJsonTo = currentPDFPath;
+    }
+
+    // --- Save Metadata to JSON (Initial Save) --- 
+    console.log(`Attempting to write JSON metadata to: ${newJsonFilePath}`);
+    const writeJsonResult = await ipcRenderer.invoke('write-json-file', { filePath: newJsonFilePath, data: finalMetadataForJson });
+    if (!writeJsonResult.success) {
+      alert(`Error saving metadata to JSON file: ${writeJsonResult.error}`);
+      // Potentially roll back PDF rename if it happened? For now, alert and exit.
+      return;
+    }
+    console.log('Initial metadata saved successfully to JSON file.');
+    currentManualData = { ...finalMetadataForJson }; // Update in-memory metadata with what was just saved
+
+    // --- Add PDF Signature if not already added --- 
+    let overallSuccessMessage = "Metadata saved successfully!";
+    let signatureAttemptFailed = false;
+
+    if (!currentManualData.pdfSignatureAdded) {
+      console.log(`Attempting to add PDF signature to: ${pdfPathToSaveJsonTo}`);
+      const signature = "Processed by Moto-Manual.com";
+      const setProducerResult = await ipcRenderer.invoke('set-pdf-producer', { 
+        pdfPath: pdfPathToSaveJsonTo, 
+        producerString: signature 
+      });
+
+      if (setProducerResult.success) {
+        console.log(`PDF signature added successfully to ${pdfPathToSaveJsonTo}.`);
+        currentManualData.pdfSignatureAdded = true; // Update in-memory version
+
+        console.log(`Re-saving JSON metadata to ${newJsonFilePath} with pdfSignatureAdded flag.`);
+        const rewriteJsonResult = await ipcRenderer.invoke('write-json-file', { 
+          filePath: newJsonFilePath, 
+          data: currentManualData // currentManualData now has the flag
+        });
+
+        if (!rewriteJsonResult.success) {
+          console.warn(`Failed to re-save JSON with pdfSignatureAdded flag: ${rewriteJsonResult.error}`);
+          overallSuccessMessage = "Metadata saved and PDF signed. However, failed to update the JSON file with the signature status. The signature might be re-applied if you save again.";
+          signatureAttemptFailed = true; // Indicates a partial failure in the signature process
         }
       } else {
-        // No renaming needed, just show success message
-        alert('Metadata saved successfully to the PDF file!');
+        console.warn(`Failed to add PDF signature: ${setProducerResult.error}`);
+        overallSuccessMessage = "Metadata saved to JSON. However, failed to add the signature to the PDF file itself.";
+        signatureAttemptFailed = true; // Indicates a failure in the signature process
       }
-    } catch (error) {
-      console.error('Error updating PDF metadata:', error);
-      alert(`Error updating PDF metadata: ${error.message}`);
+    } else {
+      console.log('PDF signature already present in metadata, or not added in this step.');
     }
+
+    // --- Update UI --- 
+    viewerTitle.textContent = path.basename(currentPDFPath); // Use currentPDFPath as it's authoritative
+    const manualItem = document.querySelector(`.manual-item[data-index="${selectedManualIndex}"]`);
+    if (manualItem) {
+      manualItem.querySelector('.manual-item-title').textContent = currentManualData.title || path.basename(currentManualData.filename, '.pdf');
+      const brandModelYearDiv = manualItem.querySelector('.manual-item-brand-model');
+      if (brandModelYearDiv) {
+         brandModelYearDiv.textContent = 
+          `${currentManualData.brand || ''} ${currentManualData.model || ''} ${currentManualData.year ? `(${currentManualData.year})` : ''}`.trim();
+      }
+      const typeSpan = manualItem.querySelector('.manual-item-type');
+      if (typeSpan) {
+        if (currentManualData.manualType) {
+            typeSpan.textContent = currentManualData.manualType;
+            typeSpan.style.display = '';
+        } else {
+            typeSpan.style.display = 'none';
+        }
+      }
+    }
+
+    alert(overallSuccessMessage);
+    
+    // Optionally, re-load the PDF if it was renamed to ensure viewer is up-to-date, 
+    // though currentPDFDoc should still be valid unless closed by rename.
+    // If PDF was renamed, loadPDF was already called in the previous version. Let's ensure it's consistent.
+    // No, loadPDF is not called here in this new logic. We've updated currentPDFPath.
+    // The form is already up-to-date from user input. A full reload might not be necessary unless the PDF content itself changed.
+    // For now, we assume the PDF content is static and only metadata/filename changes.
+
+  } catch (error) {
+    console.error('Error in saveMetadata process:', error);
+    alert(`An unexpected error occurred while saving metadata: ${error.message}`);
   }
 }
 
@@ -507,9 +584,7 @@ function extractMetadataFromFilename(filename) {
     brand: '',
     model: '',
     year: '',
-    yearRange: '',
-    revision: '',
-    type: '',
+    manualType: '',
     tags: []
   };
   
@@ -534,7 +609,7 @@ function extractMetadataFromFilename(filename) {
     if (/^\d{4}$/.test(parts[2])) {
       metadata.year = parts[2];
     } else if (/^\d{4}-\d{4}$/.test(parts[2])) {
-      metadata.yearRange = parts[2];
+      // Removed year-range handling
     }
   }
   
@@ -545,7 +620,7 @@ function extractMetadataFromFilename(filename) {
     
     for (const type of knownTypes) {
       if (lowerType.includes(type.toLowerCase())) {
-        metadata.type = type;
+        metadata.manualType = type;
         break;
       }
     }

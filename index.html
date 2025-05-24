@@ -69,42 +69,50 @@
             <input type="text" id="model" name="model">
           </div>
           <div class="form-group">
-            <label for="year">Year</label>
-            <input type="text" id="year" name="year">
+            <label for="year">Year:</label>
+            <input type="number" id="year" name="year">
           </div>
           <div class="form-group">
-            <label for="year-range">Year Range</label>
-            <input type="text" id="year-range" name="yearRange" placeholder="e.g. 2010-2015">
-          </div>
-          <div class="form-group">
-            <label for="revision">Revision</label>
-            <input type="text" id="revision" name="revision">
-          </div>
-          <div class="form-group">
-            <label for="type">Type</label>
-            <select id="type" name="type">
-              <option value="">Select a type</option>
-              <option value="service">Service</option>
-              <option value="user manual">User Manual</option>
+            <label for="manualType">Manual Type:</label>
+            <select id="manualType" name="manualType">
+              <option value="">--Select Type--</option>
+              <option value="workshop manual">Workshop Manual</option>
+              <option value="owner manual">Owner Manual</option>
+              <option value="bike parts">Bike Parts</option>
               <option value="diagram">Diagram</option>
-              <option value="electrical">Electrical</option>
-              <option value="parts catalog">Parts Catalog</option>
+              <option value="other">Other</option>
             </select>
           </div>
           <div class="form-group">
-            <label>Tags</label>
-            <div class="tags-container">
-              <label class="tag-item"><input type="checkbox" name="tags" value="roadster"> Roadster</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="cruiser"> Cruiser</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="sportive"> Sportive</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="routiere"> Routiere</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="dual sport"> Dual Sport</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="scooter"> Scooter</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="cyclomoteur"> Cyclomoteur</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="quad"> Quad</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="trike"> Trike</label>
-              <label class="tag-item"><input type="checkbox" name="tags" value="autre"> Autre</label>
+            <label>Bike Type:</label>
+            <div id="bikeType-checkboxes" class="checkbox-group">
+              <label><input type="checkbox" name="bikeType" value="Route"> Route</label>
+              <label><input type="checkbox" name="bikeType" value="VTT"> VTT</label>
+              <label><input type="checkbox" name="bikeType" value="Touring"> Touring</label>
+              <label><input type="checkbox" name="bikeType" value="Cruiser"> Cruiser</label>
+              <label><input type="checkbox" name="bikeType" value="Sportive"> Sportive</label>
+              <label><input type="checkbox" name="bikeType" value="Tout-terrain"> Tout-terrain</label>
+              <label><input type="checkbox" name="bikeType" value="Autre"> Autre</label>
             </div>
+          </div>
+          <div class="form-group">
+            <label for="language">Language:</label>
+            <select id="language" name="language">
+              <option value="">--Select Language--</option>
+              <option value="fr">Français</option>
+              <option value="en">Anglais</option>
+              <option value="es">Espagnol</option>
+              <option value="de">Allemand</option>
+              <option value="other">Autre</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="tags">Tags (Keywords)</label>
+            <input type="text" id="tags" name="tags" placeholder="e.g. motorcycle, repair, maintenance">
+          </div>
+          <div class="form-group">
+            <label for="description">Description</label>
+            <textarea id="description" name="description"></textarea>
           </div>
         </form>
       </div>

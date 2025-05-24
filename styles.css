@@ -184,6 +184,24 @@ body {
   font-size: 14px;
 }
 
+.checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.checkbox-group label {
+  width: 50%;
+  font-weight: normal;
+  margin-bottom: 5px;
+  display: flex;
+  align-items: center;
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: auto;
+  margin-right: 5px;
+}
+
 .tags-container {
   display: flex;
   flex-wrap: wrap;
