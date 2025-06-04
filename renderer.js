@@ -102,6 +102,40 @@ function setupEventListeners() {
   saveMetadataBtn.addEventListener('click', async () => {
     await saveMetadata(); // New call, uses global currentPDFPath and selectedManualIndex
   });
+  
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (event) => {
+    // Ctrl+S to save
+    if (event.ctrlKey && event.key === 's') {
+      event.preventDefault();
+      if (currentPDFPath) {
+        saveMetadata();
+      }
+    }
+    
+    // Ctrl+Right Arrow to advance to next file
+    if (event.ctrlKey && event.key === 'ArrowRight') {
+      event.preventDefault();
+      autoAdvanceToNextFile();
+    }
+    
+    // Ctrl+Left Arrow to go to previous file
+    if (event.ctrlKey && event.key === 'ArrowLeft') {
+      event.preventDefault();
+      if (selectedManualIndex > 0) {
+        const prevIndex = selectedManualIndex - 1;
+        selectManual(prevIndex);
+      } else {
+        showNotification('Already at the first file in the list!', 'info');
+      }
+    }
+    
+    // Escape to close notifications
+    if (event.key === 'Escape') {
+      const notifications = document.querySelectorAll('.notification');
+      notifications.forEach(notif => notif.remove());
+    }
+  });
 }
 
 // Scan directory for PDF files
@@ -113,12 +147,20 @@ async function scanDirectory(directoryPath) {
     
     if (manuals.length > 0) {
       await loadManualsList(manuals);
+      // Add refresh button after successful scan
+      addRefreshButton();
     } else {
       manualsList.innerHTML = '<div class="empty-state"><p>No PDF files found</p><p>Select another folder containing PDF files</p></div>';
+      addRefreshButton(); // Add refresh button even when no files found
     }
   } catch (error) {
     console.error('Error scanning directory:', error);
-    manualsList.innerHTML = `<div class="empty-state"><p>Error scanning directory</p><p>${error.message}</p></div>`;
+    manualsList.innerHTML = `
+      <div class="empty-state">
+        <p>Error scanning directory</p>
+        <p>${error.message}</p>
+        <button class="btn" onclick="refreshCurrentDirectory()" style="margin-top: 10px;">Try Again</button>
+      </div>`;
   }
 }
 
@@ -162,6 +204,8 @@ async function loadManualsList(manuals) {
 
 // Select a manual from the list
 async function selectManual(index) {
+  console.log(`Selecting manual at index ${index}`);
+  
   // Clear previous selection
   const previousSelected = document.querySelector('.manual-item.selected');
   if (previousSelected) {
@@ -177,48 +221,82 @@ async function selectManual(index) {
   selectedManualIndex = index;
   const manual = manuals[index];
   
+  console.log(`Selected manual: ${manual.filename}`);
+  console.log(`Manual path: ${manual.path}`);
+  
   // Start with metadata extracted from filename (as a fallback)
   // This will be overridden by actual PDF metadata if available
   updateMetadataForm(manual.metadata);
   
-  // Enable save button
-  saveMetadataBtn.disabled = false;
-  
   // Load PDF preview and extract its metadata
   // The loadPDF function will update the form with PDF metadata if available
+  // and properly enable the form fields
+  console.log(`Loading PDF for manual: ${manual.filename}`);
   await loadPDF(manual.path, manual);
+  console.log(`Completed loading PDF for manual: ${manual.filename}`);
 }
 
 // Load a PDF file
 async function loadPDF(pdfPath, manualObject) {
   try {
-    currentPDFPath = pdfPath;
+    let actualPdfPath = pdfPath;
+    let fileWasRenamed = false;
+    
+    // First, try to find the file smartly in case it was renamed
+    try {
+      const findResult = await ipcRenderer.invoke('find-file-smart', pdfPath);
+      if (findResult.success) {
+        actualPdfPath = findResult.foundPath;
+        fileWasRenamed = findResult.wasRenamed;
+        
+        if (fileWasRenamed) {
+          console.log(`File was renamed: ${findResult.originalName} -> ${findResult.newName}`);
+          // Update the manual object with the new path
+          if (manualObject) {
+            manualObject.path = actualPdfPath;
+            manualObject.filename = path.basename(actualPdfPath);
+          }
+          // Update the manuals array
+          if (selectedManualIndex >= 0 && manuals[selectedManualIndex]) {
+            manuals[selectedManualIndex].path = actualPdfPath;
+            manuals[selectedManualIndex].filename = path.basename(actualPdfPath);
+          }
+        }
+      } else {
+        throw new Error(`File not found: ${pdfPath}. ${findResult.error || ''}`);
+      }
+    } catch (smartFindError) {
+      console.error('Smart file finding failed:', smartFindError);
+      throw new Error(`Could not locate PDF file. Original path: ${pdfPath}. ${smartFindError.message}`);
+    }
+    
+    currentPDFPath = actualPdfPath;
     
     // Clear previous PDF content
     pdfViewer.innerHTML = '';
     
     // Update viewer title
-    viewerTitle.textContent = path.basename(pdfPath);
+    viewerTitle.textContent = path.basename(actualPdfPath);
     
     // Attempt to load metadata from companion JSON file
-    const jsonFilePath = pdfPath.replace(/\.pdf$/i, '.json');
+    const jsonFilePath = actualPdfPath.replace(/\.pdf$/i, '.json');
     let jsonData = null;
     try {
-      console.log(`Attempting to read JSON metadata from: ${jsonFilePath}`);
       const readResult = await ipcRenderer.invoke('read-json-file', jsonFilePath);
       if (readResult.success) {
         jsonData = readResult.data;
-      } else {
+        console.log(`Loaded metadata for ${path.basename(actualPdfPath)}:`, jsonData);
+      } else if (readResult.code !== 'ENOENT') {
+        // Only log if it's not a "file doesn't exist" error
         console.warn(`Failed to read JSON metadata from ${jsonFilePath}: ${readResult.error}`);
-        jsonData = null;
       }
     } catch (error) {
-      console.warn(`Error invoking 'read-json-file' for ${jsonFilePath}: ${error.message}`);
-      jsonData = null; // Ensure jsonData is null on error
+      console.warn(`Error reading JSON metadata for ${path.basename(actualPdfPath)}: ${error.message}`);
+      jsonData = null;
     }
 
+    // Update metadata form with available data
     if (jsonData) {
-      console.log('Successfully loaded metadata from JSON:', jsonData);
       if (manualObject) {
         manualObject.metadata = { ...jsonData }; // Update the manual's metadata store with a copy
       }
@@ -226,11 +304,17 @@ async function loadPDF(pdfPath, manualObject) {
     } else {
       // Fallback: if JSON not found/error, use metadata from manualObject (filename extraction) or clear form
       if (manualObject && manualObject.metadata) {
+        console.log(`Using filename-extracted metadata for ${path.basename(actualPdfPath)}`);
         updateMetadataForm(manualObject.metadata); 
       } else {
+        console.log(`No metadata available for ${path.basename(actualPdfPath)} - starting with empty form`);
         updateMetadataForm({}); // Clear form if no metadata at all
       }
     }
+    
+    // ALWAYS enable the form fields and save button when we have a valid PDF
+    console.log(`Enabling form for PDF: ${path.basename(actualPdfPath)}`);
+    enableMetadataForm(true);
     
     // Show loading indicator
     const loadingDiv = document.createElement('div');
@@ -239,7 +323,8 @@ async function loadPDF(pdfPath, manualObject) {
     pdfViewer.appendChild(loadingDiv);
     
     // Load the PDF document
-    const loadingTask = pdfjsLib.getDocument(pdfPath);
+    console.log(`Loading PDF document: ${actualPdfPath}`);
+    const loadingTask = pdfjsLib.getDocument(actualPdfPath);
     currentPDFDoc = await loadingTask.promise;
     
     // Get page count
@@ -258,9 +343,60 @@ async function loadPDF(pdfPath, manualObject) {
     
     // Render the current page
     await renderPage(currentPage);
+    
+    console.log(`PDF loaded successfully: ${path.basename(actualPdfPath)}`);
+    
+    // Show success message if file was found after being renamed
+    if (fileWasRenamed) {
+      showNotification('✓ File found: The PDF was renamed but successfully located.', 'success');
+    }
+    
   } catch (error) {
     console.error('Error loading PDF:', error);
     pdfViewer.innerHTML = `<div class="error">Error loading PDF: ${error.message}</div>`;
+    showNotification(`Error loading PDF: ${error.message}`, 'error');
+    // Disable form when PDF fails to load
+    enableMetadataForm(false);
+  }
+}
+
+// Helper function to enable/disable the metadata form
+function enableMetadataForm(enabled) {
+  console.log(`${enabled ? 'Enabling' : 'Disabling'} metadata form`);
+  
+  const formInputs = document.querySelectorAll('#metadata-form input, #metadata-form select, #metadata-form textarea');
+  const saveBtn = document.getElementById('save-metadata-btn');
+  const metadataForm = document.getElementById('metadata-form');
+  
+  console.log(`Found ${formInputs.length} form inputs to ${enabled ? 'enable' : 'disable'}`);
+  
+  formInputs.forEach((input, index) => {
+    input.disabled = !enabled;
+    if (index < 3) { // Log first 3 inputs for debugging
+      console.log(`${enabled ? 'Enabled' : 'Disabled'} input: ${input.id || input.name || 'unnamed'}`);
+    }
+  });
+  
+  if (saveBtn) {
+    saveBtn.disabled = !enabled || !currentPDFPath;
+    console.log(`Save button ${saveBtn.disabled ? 'disabled' : 'enabled'}`);
+  } else {
+    console.error('Save button not found!');
+  }
+  
+  if (metadataForm) {
+    if (enabled) {
+      metadataForm.style.opacity = '1';
+      metadataForm.style.pointerEvents = 'auto';
+      metadataForm.style.backgroundColor = ''; // Remove any background color that might indicate disabled state
+    } else {
+      metadataForm.style.opacity = '0.6';
+      metadataForm.style.pointerEvents = 'none';
+      metadataForm.style.backgroundColor = '#f5f5f5'; // Light gray to indicate disabled
+    }
+    console.log(`Form visual state: opacity=${metadataForm.style.opacity}, pointerEvents=${metadataForm.style.pointerEvents}`);
+  } else {
+    console.error('Metadata form element not found!');
   }
 }
 
@@ -352,14 +488,17 @@ function updateMetadataForm(metadata) {
   document.getElementById('tags').value = m.tags && Array.isArray(m.tags) ? m.tags.join(', ') : '';
   document.getElementById('description').value = m.description || '';
 
-  saveMetadataBtn.disabled = !currentPDFPath;
+  // Enable the form if we have a valid PDF path
+  if (currentPDFPath) {
+    enableMetadataForm(true);
+  }
 }
 
 // Save metadata to the JSON file
 async function saveMetadata() { 
   if (!currentPDFPath || selectedManualIndex < 0) {
     console.error('No PDF selected or invalid index. Cannot save metadata.');
-    alert('Error: No PDF selected or an internal error occurred.');
+    showNotification('Error: No PDF selected or an internal error occurred.', 'error');
     return;
   }
 
@@ -391,9 +530,12 @@ async function saveMetadata() {
   const tags = tagsString ? tagsString.split(',').map(tag => tag.trim()).filter(tag => tag) : [];
 
   if (!title) {
-    alert('Title is a required field.');
+    showNotification('Title is a required field.', 'warning');
     return;
   }
+
+  // Show saving notification
+  showNotification('Saving metadata...', 'info', 1000);
 
   // Consolidate metadata: merge form data with existing non-form data from currentManualData
   const metadataFromForm = {
@@ -413,13 +555,6 @@ async function saveMetadata() {
     ...metadataFromForm,  // Overwrites with form values for shared fields
     id: manualId          // Explicitly use the determined manualId (newly generated or existing)
   };
-
-  // Update currentManualData with the new ID if it was just generated
-  // currentManualData.id = manualId; // This is now handled by the spread into finalMetadataForJson and subsequent assignment
-  // Also update with other potentially changed fields before any renaming happens
-  // This ensures that if renaming fails, the form still reflects what was attempted to be saved.
-  // However, the primary source of truth for the form should be what's successfully written to JSON.
-  // For now, we'll rely on a successful save then reload for consistency, or update currentManualData after successful save.
 
   // --- Filename Generation and Renaming Logic (if title changed) ---
   // Construct new filename based on title, brand, model, year, language
@@ -450,11 +585,11 @@ async function saveMetadata() {
       
       const checkFileResult = await ipcRenderer.invoke('check-file-exists', newPdfPath);
       if (!checkFileResult.success) {
-        alert(`Error checking file existence: ${checkFileResult.error}`);
+        showNotification(`Error checking file existence: ${checkFileResult.error}`, 'error');
         return;
       }
       if (checkFileResult.exists) {
-        alert(`Error: A file named "${newProposedPdfFilename}" already exists in this directory. Please choose a different title or rename the existing file.`);
+        showNotification(`Error: A file named "${newProposedPdfFilename}" already exists in this directory. Please choose a different title or rename the existing file.`, 'error', 5000);
         return;
       }
 
@@ -462,7 +597,7 @@ async function saveMetadata() {
       console.log(`Attempting to rename PDF from ${currentPDFPath} to ${newPdfPath}`);
       const renamePdfResult = await ipcRenderer.invoke('rename-file', { oldPath: currentPDFPath, newPath: newPdfPath });
       if (!renamePdfResult.success) {
-        alert(`Error renaming PDF: ${renamePdfResult.error}. Metadata not saved.`);
+        showNotification(`Error renaming PDF: ${renamePdfResult.error}. Metadata not saved.`, 'error', 5000);
         return;
       }
       console.log(`PDF renamed successfully to ${newPdfPath}`);
@@ -487,7 +622,13 @@ async function saveMetadata() {
 
       // Update currentPDFPath and manual object to reflect the rename
       currentPDFPath = newPdfPath;
-      currentManualData.filename = path.basename(newPdfPath); 
+      currentManualData.filename = path.basename(newPdfPath);
+      
+      // Update the manuals array with new path
+      if (manuals[selectedManualIndex]) {
+        manuals[selectedManualIndex].path = newPdfPath;
+        manuals[selectedManualIndex].filename = path.basename(newPdfPath);
+      }
     } else {
       // If PDF name hasn't changed, newJsonFilePath should still be based on currentPDFPath
       newJsonFilePath = currentPDFPath.replace(/\.pdf$/i, '.json');
@@ -498,8 +639,7 @@ async function saveMetadata() {
     console.log(`Attempting to write JSON metadata to: ${newJsonFilePath}`);
     const writeJsonResult = await ipcRenderer.invoke('write-json-file', { filePath: newJsonFilePath, data: finalMetadataForJson });
     if (!writeJsonResult.success) {
-      alert(`Error saving metadata to JSON file: ${writeJsonResult.error}`);
-      // Potentially roll back PDF rename if it happened? For now, alert and exit.
+      showNotification(`Error saving metadata to JSON file: ${writeJsonResult.error}`, 'error', 5000);
       return;
     }
     console.log('Initial metadata saved successfully to JSON file.');
@@ -529,7 +669,7 @@ async function saveMetadata() {
 
         if (!rewriteJsonResult.success) {
           console.warn(`Failed to re-save JSON with pdfSignatureAdded flag: ${rewriteJsonResult.error}`);
-          overallSuccessMessage = "Metadata saved and PDF signed. However, failed to update the JSON file with the signature status. The signature might be re-applied if you save again.";
+          overallSuccessMessage = "Metadata saved and PDF signed. However, failed to update the JSON file with the signature status.";
           signatureAttemptFailed = true; // Indicates a partial failure in the signature process
         }
       } else {
@@ -562,18 +702,18 @@ async function saveMetadata() {
       }
     }
 
-    alert(overallSuccessMessage);
+    // Show success notification
+    const notificationType = signatureAttemptFailed ? 'warning' : 'success';
+    showNotification(overallSuccessMessage, notificationType, 2000);
     
-    // Optionally, re-load the PDF if it was renamed to ensure viewer is up-to-date, 
-    // though currentPDFDoc should still be valid unless closed by rename.
-    // If PDF was renamed, loadPDF was already called in the previous version. Let's ensure it's consistent.
-    // No, loadPDF is not called here in this new logic. We've updated currentPDFPath.
-    // The form is already up-to-date from user input. A full reload might not be necessary unless the PDF content itself changed.
-    // For now, we assume the PDF content is static and only metadata/filename changes.
+    // Auto-advance to next file after a short delay
+    setTimeout(() => {
+      autoAdvanceToNextFile();
+    }, 1500);
 
   } catch (error) {
     console.error('Error in saveMetadata process:', error);
-    alert(`An unexpected error occurred while saving metadata: ${error.message}`);
+    showNotification(`An unexpected error occurred while saving metadata: ${error.message}`, 'error', 5000);
   }
 }
 
@@ -629,5 +769,177 @@ function extractMetadataFromFilename(filename) {
   return metadata;
 }
 
+// Refresh the current directory scan
+async function refreshCurrentDirectory() {
+  const directories = await ipcRenderer.invoke('get-manual-directories');
+  if (directories && directories.length > 0) {
+    console.log('Refreshing directory scan...');
+    
+    // Show loading notification
+    showNotification('🔄 Refreshing directory...', 'info', 1000);
+    
+    await scanDirectory(directories[0]);
+    
+    // Show refresh success message
+    showNotification('🔄 Directory refreshed successfully!', 'success', 2000);
+  } else {
+    showNotification('No directory selected to refresh.', 'warning');
+  }
+}
+
+// Add refresh button functionality
+function addRefreshButton() {
+  const headerDiv = document.querySelector('.left-panel .panel-header');
+  
+  // Check if refresh button already exists
+  if (document.getElementById('refresh-directory-btn')) {
+    return;
+  }
+  
+  const refreshBtn = document.createElement('button');
+  refreshBtn.id = 'refresh-directory-btn';
+  refreshBtn.className = 'btn';
+  refreshBtn.textContent = 'Refresh';
+  refreshBtn.style.marginLeft = '10px';
+  refreshBtn.addEventListener('click', refreshCurrentDirectory);
+  
+  headerDiv.appendChild(refreshBtn);
+}
+
 // Initialize the application when DOM is ready
 document.addEventListener('DOMContentLoaded', initApp);
+
+// Debugging functions for manual testing (available in console)
+window.debugApp = {
+  enableForm: () => {
+    console.log('Manually enabling form...');
+    enableMetadataForm(true);
+  },
+  disableForm: () => {
+    console.log('Manually disabling form...');
+    enableMetadataForm(false);
+  },
+  checkFormState: () => {
+    const formInputs = document.querySelectorAll('#metadata-form input, #metadata-form select, #metadata-form textarea');
+    const saveBtn = document.getElementById('save-metadata-btn');
+    console.log('Form state check:');
+    console.log(`- Number of form inputs: ${formInputs.length}`);
+    console.log(`- Disabled inputs: ${Array.from(formInputs).filter(input => input.disabled).length}`);
+    console.log(`- Save button disabled: ${saveBtn ? saveBtn.disabled : 'Button not found'}`);
+    console.log(`- Current PDF path: ${currentPDFPath || 'None'}`);
+    console.log(`- Selected manual index: ${selectedManualIndex}`);
+    return {
+      totalInputs: formInputs.length,
+      disabledInputs: Array.from(formInputs).filter(input => input.disabled).length,
+      saveButtonDisabled: saveBtn ? saveBtn.disabled : null,
+      currentPDFPath,
+      selectedManualIndex
+    };
+  },
+  getCurrentManual: () => {
+    if (selectedManualIndex >= 0 && manuals[selectedManualIndex]) {
+      return manuals[selectedManualIndex];
+    }
+    return null;
+  },
+  showTestNotification: (message = 'Test notification', type = 'info') => {
+    showNotification(message, type);
+  },
+  getManualsList: () => {
+    return manuals.map((manual, index) => ({
+      index,
+      filename: manual.filename,
+      hasMetadata: !!manual.metadata,
+      selected: index === selectedManualIndex
+    }));
+  },
+  saveCurrentFile: () => {
+    if (currentPDFPath) {
+      saveMetadata();
+    } else {
+      console.warn('No file selected');
+    }
+  },
+  nextFile: () => {
+    autoAdvanceToNextFile();
+  },
+  clearNotifications: () => {
+    const notifications = document.querySelectorAll('.notification');
+    notifications.forEach(notif => notif.remove());
+    console.log(`Cleared ${notifications.length} notifications`);
+  }
+};
+
+// Helper function to show non-blocking notifications
+function showNotification(message, type = 'success', duration = 3000) {
+  // Remove any existing notifications
+  const existingNotifs = document.querySelectorAll('.notification');
+  existingNotifs.forEach(notif => notif.remove());
+  
+  const notification = document.createElement('div');
+  notification.className = `notification notification-${type}`;
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 15px 20px;
+    border-radius: 5px;
+    color: white;
+    font-weight: bold;
+    z-index: 10000;
+    max-width: 400px;
+    word-wrap: break-word;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    transform: translateX(100%);
+    transition: transform 0.3s ease-in-out;
+  `;
+  
+  // Set background color based on type
+  switch(type) {
+    case 'success':
+      notification.style.backgroundColor = '#28a745';
+      break;
+    case 'error':
+      notification.style.backgroundColor = '#dc3545';
+      break;
+    case 'warning':
+      notification.style.backgroundColor = '#ffc107';
+      notification.style.color = '#000';
+      break;
+    case 'info':
+      notification.style.backgroundColor = '#17a2b8';
+      break;
+  }
+  
+  notification.textContent = message;
+  document.body.appendChild(notification);
+  
+  // Animate in
+  setTimeout(() => {
+    notification.style.transform = 'translateX(0)';
+  }, 100);
+  
+  // Auto-remove after duration
+  setTimeout(() => {
+    notification.style.transform = 'translateX(100%)';
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.parentNode.removeChild(notification);
+      }
+    }, 300);
+  }, duration);
+}
+
+// Helper function to auto-advance to next file in the list
+function autoAdvanceToNextFile() {
+  if (selectedManualIndex >= 0 && selectedManualIndex < manuals.length - 1) {
+    const nextIndex = selectedManualIndex + 1;
+    console.log(`Auto-advancing from file ${selectedManualIndex} to ${nextIndex}`);
+    selectManual(nextIndex);
+    return true;
+  } else {
+    console.log('Already at the last file in the list');
+    showNotification('You have reached the last file in the list!', 'info');
+    return false;
+  }
+}

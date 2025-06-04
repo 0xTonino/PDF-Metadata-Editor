@@ -277,11 +277,20 @@ ipcMain.handle('check-file-exists', async (event, filePath) => {
 // Handler to read a JSON file
 ipcMain.handle('read-json-file', async (event, filePath) => {
   try {
+    if (!fs.existsSync(filePath)) {
+      // Don't log this as an error since it's expected for new files
+      return { success: false, error: 'File does not exist', code: 'ENOENT' };
+    }
+    
     const fileContent = fs.readFileSync(filePath, 'utf8');
-    return { success: true, data: JSON.parse(fileContent) };
+    const data = JSON.parse(fileContent);
+    return { success: true, data: data };
   } catch (error) {
-    console.error('Error reading JSON file:', error);
-    return { success: false, error: error.message };
+    // Only log actual errors, not missing files
+    if (error.code !== 'ENOENT') {
+      console.error('Error reading JSON file:', error);
+    }
+    return { success: false, error: error.message, code: error.code };
   }
 });
 
@@ -415,4 +424,109 @@ async function scanDirectoryForPDFs(directoryPath) {
   }
   
   return pdfFiles;
+}
+
+// Handler to find a file that may have been renamed
+ipcMain.handle('find-file-smart', async (event, originalPath) => {
+  try {
+    // First, check if the original file still exists
+    if (fs.existsSync(originalPath)) {
+      return { success: true, foundPath: originalPath, wasRenamed: false };
+    }
+
+    const directory = path.dirname(originalPath);
+    const originalBasename = path.basename(originalPath, '.pdf');
+    
+    // Look for similar files in the same directory
+    const items = fs.readdirSync(directory);
+    const pdfFiles = items.filter(item => path.extname(item).toLowerCase() === '.pdf');
+    
+    // Try to find the most likely candidate
+    for (const pdfFile of pdfFiles) {
+      const candidatePath = path.join(directory, pdfFile);
+      const candidateBasename = path.basename(pdfFile, '.pdf');
+      
+      // Check if there's a companion JSON file with matching metadata
+      const jsonPath = candidatePath.replace(/\.pdf$/i, '.json');
+      if (fs.existsSync(jsonPath)) {
+        try {
+          const jsonContent = fs.readFileSync(jsonPath, 'utf8');
+          const metadata = JSON.parse(jsonContent);
+          
+          // If the JSON contains a title that matches the original filename pattern
+          // or if the filename is very similar, consider it a match
+          if (metadata.title && (
+            originalBasename.toLowerCase().includes(metadata.title.toLowerCase()) ||
+            metadata.title.toLowerCase().includes(originalBasename.toLowerCase()) ||
+            candidateBasename.toLowerCase().includes(originalBasename.toLowerCase()) ||
+            originalBasename.toLowerCase().includes(candidateBasename.toLowerCase())
+          )) {
+            return { 
+              success: true, 
+              foundPath: candidatePath, 
+              wasRenamed: true,
+              originalName: originalBasename,
+              newName: candidateBasename
+            };
+          }
+        } catch (jsonError) {
+          // JSON parsing failed, continue checking other files
+        }
+      }
+      
+      // Fallback: check for filename similarity (at least 70% match)
+      const similarity = calculateStringSimilarity(originalBasename.toLowerCase(), candidateBasename.toLowerCase());
+      if (similarity > 0.7) {
+        return { 
+          success: true, 
+          foundPath: candidatePath, 
+          wasRenamed: true,
+          originalName: originalBasename,
+          newName: candidateBasename,
+          similarity: similarity
+        };
+      }
+    }
+    
+    return { success: false, error: 'File not found in directory' };
+  } catch (error) {
+    console.error('Error in smart file search:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Helper function to calculate string similarity (Levenshtein distance based)
+function calculateStringSimilarity(str1, str2) {
+  const longer = str1.length > str2.length ? str1 : str2;
+  const shorter = str1.length > str2.length ? str2 : str1;
+  const editDistance = levenshteinDistance(longer, shorter);
+  return (longer.length - editDistance) / longer.length;
+}
+
+function levenshteinDistance(str1, str2) {
+  const matrix = [];
+  
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i];
+  }
+  
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j;
+  }
+  
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  
+  return matrix[str2.length][str1.length];
 }
