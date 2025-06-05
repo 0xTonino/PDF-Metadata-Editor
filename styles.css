@@ -207,6 +207,14 @@ body {
   resize: vertical;
 }
 
+.field-help {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+}
+
 .checkbox-group {
   display: flex;
   flex-wrap: wrap;
@@ -387,4 +395,127 @@ body {
   border: 1px solid #f5c6cb;
   border-radius: 4px;
   margin: 20px;
+}
+
+/* Smart Suggestions System */
+.smart-suggestion {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.suggestions-container {
+  margin-top: 5px !important;
+  display: flex !important;
+  gap: 5px !important;
+  flex-wrap: wrap !important;
+}
+
+.suggestion-btn {
+  background: linear-gradient(45deg, #e3f2fd, #bbdefb) !important;
+  border: 1px solid #2196f3 !important;
+  border-radius: 15px !important;
+  padding: 4px 12px !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  color: #1976d2 !important;
+  transition: all 0.2s ease !important;
+  font-weight: 500 !important;
+  font-family: inherit !important;
+}
+
+.suggestion-btn:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
+}
+
+.suggestion-btn.high-confidence {
+  background: linear-gradient(45deg, #e8f5e8, #c8e6c8) !important;
+  border-color: #4caf50 !important;
+  color: #2e7d32 !important;
+}
+
+.suggestions-info {
+  font-size: 11px !important;
+  color: #666 !important;
+  font-style: italic !important;
+  margin-top: 3px !important;
+}
+
+/* Learning indicator in header */
+.learning-indicator {
+  background: linear-gradient(45deg, #f3e5f5, #e1bee7);
+  border: 1px solid #9c27b0;
+  border-radius: 12px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: #6a1b9a;
+  font-weight: 500;
+}
+
+/* Enhanced suggestion system with delete functionality */
+.suggestion-wrapper {
+  position: relative !important;
+  display: inline-block !important;
+  transition: all 0.2s ease !important;
+}
+
+.suggestion-wrapper:hover .suggestion-delete-btn {
+  opacity: 1 !important;
+}
+
+.suggestion-delete-btn {
+  position: absolute !important;
+  top: -3px !important;
+  right: 2px !important;
+  width: 16px !important;
+  height: 16px !important;
+  border: none !important;
+  background: #f44336 !important;
+  color: white !important;
+  border-radius: 50% !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+  z-index: 10 !important;
+  transition: all 0.2s ease !important;
+  opacity: 0.7 !important;
+  font-family: inherit !important;
+}
+
+.suggestion-delete-btn:hover {
+  background: #d32f2f !important;
+  transform: scale(1.1) !important;
+  opacity: 1 !important;
+}
+
+.reset-memory-btn {
+  background: #ffebee !important;
+  border: 1px solid #e57373 !important;
+  border-radius: 10px !important;
+  padding: 2px 6px !important;
+  font-size: 10px !important;
+  color: #c62828 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  font-family: inherit !important;
+}
+
+.reset-memory-btn:hover {
+  background: #ffcdd2 !important;
+  border-color: #f44336 !important;
+  transform: translateY(-1px) !important;
 }

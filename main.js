@@ -18,6 +18,16 @@ const store = new Store({
         height: { type: 'number', default: 800 }
       },
       default: { width: 1200, height: 800 }
+    },
+    learningData: {
+      type: 'object',
+      default: {
+        brandPatterns: {},
+        modelPatterns: {},
+        typePatterns: {},
+        filenameAssociations: {},
+        completionStats: {}
+      }
     }
   }
 });
@@ -530,3 +540,314 @@ function levenshteinDistance(str1, str2) {
   
   return matrix[str2.length][str1.length];
 }
+
+// Handler to save learning data from user metadata entries
+ipcMain.handle('save-learning-data', async (event, { filename, metadata }) => {
+  try {
+    const learningData = store.get('learningData');
+    
+    // Extract patterns from filename
+    const normalizedFilename = filename.toLowerCase();
+    const filenameParts = normalizedFilename.replace(/[^a-z0-9]/g, ' ').split(/\s+/);
+    
+    // Learn brand patterns (preserve original case)
+    if (metadata.brand) {
+      const brandKey = metadata.brand.toLowerCase(); // for indexing
+      const brandValue = metadata.brand; // preserve original case
+      if (!learningData.brandPatterns[brandKey]) {
+        learningData.brandPatterns[brandKey] = { count: 0, associatedWords: {}, originalValue: brandValue };
+      }
+      learningData.brandPatterns[brandKey].count++;
+      learningData.brandPatterns[brandKey].originalValue = brandValue; // Update with latest case
+      
+      // Associate filename words with this brand
+      filenameParts.forEach(word => {
+        if (word.length > 2) { // Ignore short words
+          if (!learningData.brandPatterns[brandKey].associatedWords[word]) {
+            learningData.brandPatterns[brandKey].associatedWords[word] = 0;
+          }
+          learningData.brandPatterns[brandKey].associatedWords[word]++;
+        }
+      });
+    }
+    
+    // Learn model patterns (preserve original case)
+    if (metadata.model) {
+      const modelKey = metadata.model.toLowerCase();
+      const modelValue = metadata.model;
+      if (!learningData.modelPatterns[modelKey]) {
+        learningData.modelPatterns[modelKey] = { count: 0, associatedWords: {}, brands: {}, originalValue: modelValue };
+      }
+      learningData.modelPatterns[modelKey].count++;
+      learningData.modelPatterns[modelKey].originalValue = modelValue;
+      
+      // Associate with brand
+      if (metadata.brand) {
+        const brand = metadata.brand.toLowerCase();
+        if (!learningData.modelPatterns[modelKey].brands[brand]) {
+          learningData.modelPatterns[modelKey].brands[brand] = 0;
+        }
+        learningData.modelPatterns[modelKey].brands[brand]++;
+      }
+      
+      // Associate filename words with this model
+      filenameParts.forEach(word => {
+        if (word.length > 2) {
+          if (!learningData.modelPatterns[modelKey].associatedWords[word]) {
+            learningData.modelPatterns[modelKey].associatedWords[word] = 0;
+          }
+          learningData.modelPatterns[modelKey].associatedWords[word]++;
+        }
+      });
+    }
+    
+    // Learn manual type patterns (preserve original case)
+    if (metadata.manualType) {
+      const typeKey = metadata.manualType.toLowerCase();
+      const typeValue = metadata.manualType;
+      if (!learningData.typePatterns[typeKey]) {
+        learningData.typePatterns[typeKey] = { count: 0, associatedWords: {}, originalValue: typeValue };
+      }
+      learningData.typePatterns[typeKey].count++;
+      learningData.typePatterns[typeKey].originalValue = typeValue;
+      
+      // Associate filename words with this type
+      filenameParts.forEach(word => {
+        if (word.length > 2) {
+          if (!learningData.typePatterns[typeKey].associatedWords[word]) {
+            learningData.typePatterns[typeKey].associatedWords[word] = 0;
+          }
+          learningData.typePatterns[typeKey].associatedWords[word]++;
+        }
+      });
+    }
+    
+    // Store complete filename associations (preserve original case)
+    const filenameKey = normalizedFilename.substring(0, 50); // Limit key length
+    learningData.filenameAssociations[filenameKey] = {
+      brand: metadata.brand || '',
+      model: metadata.model || '',
+      manualType: metadata.manualType || '',
+      year: metadata.year || '',
+      lastUsed: Date.now()
+    };
+    
+    // Update completion stats
+    if (!learningData.completionStats.totalSaved) {
+      learningData.completionStats.totalSaved = 0;
+    }
+    learningData.completionStats.totalSaved++;
+    learningData.completionStats.lastSaved = Date.now();
+    
+    store.set('learningData', learningData);
+    return { success: true };
+  } catch (error) {
+    console.error('Error saving learning data:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Handler to get smart suggestions based on filename
+ipcMain.handle('get-smart-suggestions', async (event, filename) => {
+  try {
+    const learningData = store.get('learningData');
+    const normalizedFilename = filename.toLowerCase();
+    const filenameParts = normalizedFilename.replace(/[^a-z0-9]/g, ' ').split(/\s+/);
+    
+    const suggestions = {
+      brand: [],
+      model: [],
+      manualType: [],
+      confidence: 0
+    };
+    
+    // Check for exact filename matches first
+    const filenameKey = normalizedFilename.substring(0, 50);
+    if (learningData.filenameAssociations[filenameKey]) {
+      const exactMatch = learningData.filenameAssociations[filenameKey];
+      suggestions.confidence = 0.9;
+      if (exactMatch.brand) suggestions.brand.push({ value: exactMatch.brand, confidence: 0.9, reason: 'exact filename match' });
+      if (exactMatch.model) suggestions.model.push({ value: exactMatch.model, confidence: 0.9, reason: 'exact filename match' });
+      if (exactMatch.manualType) suggestions.manualType.push({ value: exactMatch.manualType, confidence: 0.9, reason: 'exact filename match' });
+      return { success: true, suggestions };
+    }
+    
+    // Analyze brand patterns
+    const brandScores = {};
+    Object.keys(learningData.brandPatterns).forEach(brandKey => {
+      const pattern = learningData.brandPatterns[brandKey];
+      let score = 0;
+      let matchedWords = 0;
+      
+      filenameParts.forEach(word => {
+        if (pattern.associatedWords[word]) {
+          score += pattern.associatedWords[word] / pattern.count;
+          matchedWords++;
+        }
+      });
+      
+      if (matchedWords > 0) {
+        brandScores[brandKey] = { score: score * (matchedWords / filenameParts.length), originalValue: pattern.originalValue };
+      }
+    });
+    
+    // Get top brand suggestions
+    const topBrands = Object.entries(brandScores)
+      .sort(([,a], [,b]) => b.score - a.score)
+      .slice(0, 3)
+      .map(([brandKey, data]) => ({
+        value: data.originalValue, // Use original case
+        confidence: Math.min(data.score, 0.8),
+        reason: `learned from ${learningData.brandPatterns[brandKey].count} files`
+      }));
+    
+    suggestions.brand = topBrands;
+    
+    // Analyze model patterns (similar logic)
+    const modelScores = {};
+    Object.keys(learningData.modelPatterns).forEach(modelKey => {
+      const pattern = learningData.modelPatterns[modelKey];
+      let score = 0;
+      let matchedWords = 0;
+      
+      filenameParts.forEach(word => {
+        if (pattern.associatedWords[word]) {
+          score += pattern.associatedWords[word] / pattern.count;
+          matchedWords++;
+        }
+      });
+      
+      if (matchedWords > 0) {
+        modelScores[modelKey] = { score: score * (matchedWords / filenameParts.length), originalValue: pattern.originalValue };
+      }
+    });
+    
+    const topModels = Object.entries(modelScores)
+      .sort(([,a], [,b]) => b.score - a.score)
+      .slice(0, 3)
+      .map(([modelKey, data]) => ({
+        value: data.originalValue, // Use original case
+        confidence: Math.min(data.score, 0.8),
+        reason: `learned from ${learningData.modelPatterns[modelKey].count} files`
+      }));
+    
+    suggestions.model = topModels;
+    
+    // Analyze manual type patterns
+    const typeScores = {};
+    Object.keys(learningData.typePatterns).forEach(typeKey => {
+      const pattern = learningData.typePatterns[typeKey];
+      let score = 0;
+      let matchedWords = 0;
+      
+      filenameParts.forEach(word => {
+        if (pattern.associatedWords[word]) {
+          score += pattern.associatedWords[word] / pattern.count;
+          matchedWords++;
+        }
+      });
+      
+      if (matchedWords > 0) {
+        typeScores[typeKey] = { score: score * (matchedWords / filenameParts.length), originalValue: pattern.originalValue };
+      }
+    });
+    
+    const topTypes = Object.entries(typeScores)
+      .sort(([,a], [,b]) => b.score - a.score)
+      .slice(0, 3)
+      .map(([typeKey, data]) => ({
+        value: data.originalValue, // Use original case
+        confidence: Math.min(data.score, 0.8),
+        reason: `learned from ${learningData.typePatterns[typeKey].count} files`
+      }));
+    
+    suggestions.manualType = topTypes;
+    
+    // Calculate overall confidence
+    const hasHighConfidenceSuggestions = suggestions.brand.some(s => s.confidence > 0.5) ||
+                                       suggestions.model.some(s => s.confidence > 0.5) ||
+                                       suggestions.manualType.some(s => s.confidence > 0.5);
+    
+    suggestions.confidence = hasHighConfidenceSuggestions ? 0.7 : 0.3;
+    
+    return { success: true, suggestions };
+  } catch (error) {
+    console.error('Error getting smart suggestions:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Handler to get learning statistics
+ipcMain.handle('get-learning-stats', async () => {
+  try {
+    const learningData = store.get('learningData');
+    const stats = {
+      totalFiles: learningData.completionStats.totalSaved || 0,
+      uniqueBrands: Object.keys(learningData.brandPatterns).length,
+      uniqueModels: Object.keys(learningData.modelPatterns).length,
+      uniqueTypes: Object.keys(learningData.typePatterns).length,
+      lastSaved: learningData.completionStats.lastSaved
+    };
+    return { success: true, stats };
+  } catch (error) {
+    console.error('Error getting learning stats:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Handler to delete a specific suggestion from learning data
+ipcMain.handle('delete-suggestion', async (event, { type, value }) => {
+  try {
+    const learningData = store.get('learningData');
+    const key = value.toLowerCase();
+    
+    switch (type) {
+      case 'brand':
+        if (learningData.brandPatterns[key]) {
+          delete learningData.brandPatterns[key];
+          console.log(`Deleted brand suggestion: ${value}`);
+        }
+        break;
+      case 'model':
+        if (learningData.modelPatterns[key]) {
+          delete learningData.modelPatterns[key];
+          console.log(`Deleted model suggestion: ${value}`);
+        }
+        break;
+      case 'manualType':
+        if (learningData.typePatterns[key]) {
+          delete learningData.typePatterns[key];
+          console.log(`Deleted manual type suggestion: ${value}`);
+        }
+        break;
+      default:
+        return { success: false, error: 'Invalid suggestion type' };
+    }
+    
+    store.set('learningData', learningData);
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting suggestion:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Handler to reset all learning data
+ipcMain.handle('reset-learning-data', async () => {
+  try {
+    const resetData = {
+      brandPatterns: {},
+      modelPatterns: {},
+      typePatterns: {},
+      filenameAssociations: {},
+      completionStats: {}
+    };
+    
+    store.set('learningData', resetData);
+    console.log('Learning data has been completely reset');
+    return { success: true };
+  } catch (error) {
+    console.error('Error resetting learning data:', error);
+    return { success: false, error: error.message };
+  }
+});

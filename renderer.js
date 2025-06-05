@@ -5,8 +5,34 @@ const fs = require('fs');
 const pdfjsLib = require('pdfjs-dist');
 const pdfjsViewer = require('pdfjs-dist/web/pdf_viewer');
 
-// Set the PDF.js worker path
+// Set the PDF.js worker path and suppress console warnings
 pdfjsLib.GlobalWorkerOptions.workerSrc = path.join(__dirname, 'node_modules', 'pdfjs-dist', 'build', 'pdf.worker.js');
+
+// Suppress PDF.js console warnings for cleaner output
+const originalConsoleWarn = console.warn;
+const originalConsoleError = console.error;
+
+console.warn = function(...args) {
+  const message = args.join(' ');
+  // Filter out common PDF.js warnings that aren't actionable
+  if (message.includes('Invalid object ref') || 
+      message.includes('Trying to parse invalid object') ||
+      message.includes('PDF.js') ||
+      message.includes('worker terminated')) {
+    return; // Suppress these warnings
+  }
+  originalConsoleWarn.apply(console, args);
+};
+
+console.error = function(...args) {
+  const message = args.join(' ');
+  // Only suppress PDF parsing errors, keep other errors visible
+  if (message.includes('Invalid object ref') || 
+      message.includes('Trying to parse invalid object')) {
+    return; // Suppress these errors
+  }
+  originalConsoleError.apply(console, args);
+};
 
 // DOM Elements
 const selectDirectoryBtn = document.getElementById('select-directory-btn');
@@ -36,6 +62,10 @@ let pageNumPending = null;
 // Global variable to store the currently loaded PDF's metadata (from JSON or fallback)
 let currentManualData = {}; // Initialize as an empty object
 
+// Global variable to store suggestions
+let currentSuggestions = {};
+let learningStats = { totalFiles: 0, uniqueBrands: 0, uniqueModels: 0, uniqueTypes: 0 };
+
 // Initialize the application
 async function initApp() {
   // Try to load saved directories
@@ -48,6 +78,9 @@ async function initApp() {
   
   // Set up event listeners
   setupEventListeners();
+
+  // Load learning statistics on app start
+  await loadLearningStats();
 }
 
 // Set up event listeners
@@ -182,6 +215,14 @@ async function loadManualsList(manuals) {
     manualItem.className = 'manual-item';
     manualItem.dataset.index = i;
     
+    // Display year information - prioritize year range if available
+    let yearDisplay = '';
+    if (metadata.yearRange) {
+      yearDisplay = `(${metadata.yearRange})`;
+    } else if (metadata.year) {
+      yearDisplay = `(${metadata.year})`;
+    }
+
     manualItem.innerHTML = `
       <div class="manual-item-header">
         <div class="manual-item-title">${metadata.title || path.basename(manual.filename, '.pdf')}</div>
@@ -189,7 +230,7 @@ async function loadManualsList(manuals) {
       </div>
       <div class="manual-item-brand-model">
         ${metadata.brand ? metadata.brand : ''} ${metadata.model ? metadata.model : ''}
-        ${metadata.year ? `(${metadata.year})` : ''}
+        ${yearDisplay}
       </div>
     `;
     
@@ -223,6 +264,9 @@ async function selectManual(index) {
   
   console.log(`Selected manual: ${manual.filename}`);
   console.log(`Manual path: ${manual.path}`);
+  
+  // Get smart suggestions for this file BEFORE updating form
+  await getSmartSuggestions(manual.filename);
   
   // Start with metadata extracted from filename (as a fallback)
   // This will be overridden by actual PDF metadata if available
@@ -463,10 +507,7 @@ function updateMetadataForm(metadata) {
   document.getElementById('brand').value = m.brand || '';
   document.getElementById('model').value = m.model || '';
   document.getElementById('year').value = m.year || '';
-  
-  // Removed year-range and revision population
-  // document.getElementById('year-range').value = m.yearRange || '';
-  // document.getElementById('revision').value = m.revision || '';
+  document.getElementById('year-range').value = m.yearRange || '';
 
   document.getElementById('manualType').value = m.manualType || '';
   
@@ -494,6 +535,43 @@ function updateMetadataForm(metadata) {
   }
 }
 
+// Utility function to parse year range and generate individual years
+function parseYearRange(yearRangeStr) {
+  if (!yearRangeStr || typeof yearRangeStr !== 'string') {
+    return { isValid: false, years: [], startYear: null, endYear: null };
+  }
+
+  // Clean the input and extract years
+  const cleanStr = yearRangeStr.trim();
+  const match = cleanStr.match(/^(\d{4})\s*[-–—]\s*(\d{4})$/);
+  
+  if (!match) {
+    return { isValid: false, years: [], startYear: null, endYear: null };
+  }
+
+  const startYear = parseInt(match[1], 10);
+  const endYear = parseInt(match[2], 10);
+
+  // Validate year range
+  if (startYear > endYear || startYear < 1900 || endYear > 2100) {
+    return { isValid: false, years: [], startYear: null, endYear: null };
+  }
+
+  // Generate all years in the range
+  const years = [];
+  for (let year = startYear; year <= endYear; year++) {
+    years.push(year);
+  }
+
+  return { 
+    isValid: true, 
+    years: years, 
+    startYear: startYear, 
+    endYear: endYear,
+    originalRange: cleanStr
+  };
+}
+
 // Save metadata to the JSON file
 async function saveMetadata() { 
   if (!currentPDFPath || selectedManualIndex < 0) {
@@ -514,6 +592,7 @@ async function saveMetadata() {
   const brand = document.getElementById('brand').value.trim();
   const model = document.getElementById('model').value.trim();
   const year = parseInt(document.getElementById('year').value, 10) || null; // Ensure year is a number or null
+  const yearRange = document.getElementById('year-range').value.trim();
   const manualType = document.getElementById('manualType').value.trim();
   
   // Collect Bike Types from checkboxes
@@ -534,6 +613,28 @@ async function saveMetadata() {
     return;
   }
 
+  // Process and validate year range
+  let yearRangeData = null;
+  let allCoveredYears = [];
+  
+  if (yearRange) {
+    yearRangeData = parseYearRange(yearRange);
+    if (!yearRangeData.isValid) {
+      showNotification('Format de plage d\'années invalide. Utilisez le format: YYYY-YYYY (ex: 1998-2005)', 'warning');
+      return;
+    }
+    allCoveredYears = [...yearRangeData.years];
+    console.log(`Year range processed: ${yearRange} -> ${allCoveredYears.join(', ')}`);
+  }
+  
+  // Add individual year to covered years if specified
+  if (year && !allCoveredYears.includes(year)) {
+    allCoveredYears.push(year);
+  }
+  
+  // Sort covered years for consistency
+  allCoveredYears.sort((a, b) => a - b);
+
   // Show saving notification
   showNotification('Saving metadata...', 'info', 1000);
 
@@ -543,6 +644,13 @@ async function saveMetadata() {
     brand,
     model,
     year,
+    yearRange: yearRange || null,
+    yearRangeData: yearRangeData ? {
+      startYear: yearRangeData.startYear,
+      endYear: yearRangeData.endYear,
+      originalRange: yearRangeData.originalRange
+    } : null,
+    allCoveredYears: allCoveredYears.length > 0 ? allCoveredYears : null,
     manualType,
     bikeType: selectedBikeTypes,
     language,
@@ -688,8 +796,16 @@ async function saveMetadata() {
       manualItem.querySelector('.manual-item-title').textContent = currentManualData.title || path.basename(currentManualData.filename, '.pdf');
       const brandModelYearDiv = manualItem.querySelector('.manual-item-brand-model');
       if (brandModelYearDiv) {
-         brandModelYearDiv.textContent = 
-          `${currentManualData.brand || ''} ${currentManualData.model || ''} ${currentManualData.year ? `(${currentManualData.year})` : ''}`.trim();
+        // Display year information - prioritize year range if available
+        let yearDisplay = '';
+        if (currentManualData.yearRange) {
+          yearDisplay = `(${currentManualData.yearRange})`;
+        } else if (currentManualData.year) {
+          yearDisplay = `(${currentManualData.year})`;
+        }
+        
+        brandModelYearDiv.textContent = 
+          `${currentManualData.brand || ''} ${currentManualData.model || ''} ${yearDisplay}`.trim();
       }
       const typeSpan = manualItem.querySelector('.manual-item-type');
       if (typeSpan) {
@@ -705,6 +821,10 @@ async function saveMetadata() {
     // Show success notification
     const notificationType = signatureAttemptFailed ? 'warning' : 'success';
     showNotification(overallSuccessMessage, notificationType, 2000);
+    
+    // Save learning data for smart suggestions improvements
+    const currentFilename = path.basename(currentPDFPath);
+    await saveLearningData(currentFilename, finalMetadataForJson);
     
     // Auto-advance to next file after a short delay
     setTimeout(() => {
@@ -745,11 +865,21 @@ function extractMetadataFromFilename(filename) {
   }
   
   if (parts.length >= 3) {
-    // Check if the third part is a year (4 digits)
+    // Check if the third part is a year (4 digits) or year range (YYYY-YYYY)
     if (/^\d{4}$/.test(parts[2])) {
       metadata.year = parts[2];
-    } else if (/^\d{4}-\d{4}$/.test(parts[2])) {
-      // Removed year-range handling
+    } else if (/^\d{4}[-–—]\d{4}$/.test(parts[2])) {
+      metadata.yearRange = parts[2];
+      // Also parse and store the range data
+      const yearRangeData = parseYearRange(parts[2]);
+      if (yearRangeData.isValid) {
+        metadata.yearRangeData = {
+          startYear: yearRangeData.startYear,
+          endYear: yearRangeData.endYear,
+          originalRange: yearRangeData.originalRange
+        };
+        metadata.allCoveredYears = yearRangeData.years;
+      }
     }
   }
   
@@ -941,5 +1071,356 @@ function autoAdvanceToNextFile() {
     console.log('Already at the last file in the list');
     showNotification('You have reached the last file in the list!', 'info');
     return false;
+  }
+}
+
+// Load learning statistics on app start
+async function loadLearningStats() {
+  try {
+    const result = await ipcRenderer.invoke('get-learning-stats');
+    if (result.success) {
+      learningStats = result.stats;
+      console.log('Learning stats loaded:', learningStats);
+      updateLearningIndicator();
+    }
+  } catch (error) {
+    console.error('Error loading learning stats:', error);
+  }
+}
+
+// Get smart suggestions for a filename
+async function getSmartSuggestions(filename) {
+  try {
+    const result = await ipcRenderer.invoke('get-smart-suggestions', filename);
+    if (result.success) {
+      currentSuggestions = result.suggestions;
+      console.log('Smart suggestions loaded:', currentSuggestions);
+      
+      // Show learning info if we have good suggestions
+      if (currentSuggestions.confidence > 0.5) {
+        showNotification(`🧠 Suggestions chargées (${Math.round(currentSuggestions.confidence * 100)}% confiance)`, 'info', 2000);
+      }
+      
+      showSuggestionsInForm();
+    }
+  } catch (error) {
+    console.error('Error getting smart suggestions:', error);
+  }
+}
+
+// Save learning data when metadata is saved
+async function saveLearningData(filename, metadata) {
+  try {
+    await ipcRenderer.invoke('save-learning-data', { filename, metadata });
+    
+    // Update learning stats
+    learningStats.totalFiles++;
+    updateLearningIndicator();
+    console.log(`Learning data saved for: ${filename}`);
+  } catch (error) {
+    console.error('Error saving learning data:', error);
+  }
+}
+
+// Show suggestions in the form
+function showSuggestionsInForm() {
+  // Clear existing suggestions
+  document.querySelectorAll('.smart-suggestion').forEach(el => el.remove());
+  
+  if (!currentSuggestions || currentSuggestions.confidence < 0.3) {
+    return; // Don't show low-confidence suggestions
+  }
+  
+  // Add suggestions for brand
+  if (currentSuggestions.brand && currentSuggestions.brand.length > 0) {
+    addSuggestionsToField('brand', currentSuggestions.brand);
+  }
+  
+  // Add suggestions for model
+  if (currentSuggestions.model && currentSuggestions.model.length > 0) {
+    addSuggestionsToField('model', currentSuggestions.model);
+  }
+  
+  // Add suggestions for manual type
+  if (currentSuggestions.manualType && currentSuggestions.manualType.length > 0) {
+    addSuggestionsToField('manualType', currentSuggestions.manualType);
+  }
+}
+
+// Add suggestions to a specific field
+function addSuggestionsToField(fieldId, suggestions) {
+  const field = document.getElementById(fieldId);
+  const formGroup = field.closest('.form-group');
+  
+  if (!formGroup || suggestions.length === 0) return;
+  
+  // Create suggestions container
+  const suggestionsContainer = document.createElement('div');
+  suggestionsContainer.className = 'smart-suggestion suggestions-container';
+  suggestionsContainer.style.cssText = `
+    margin-top: 5px;
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+  `;
+  
+  suggestions.forEach((suggestion, index) => {
+    if (index >= 3) return; // Limit to 3 suggestions
+    
+    // Create suggestion wrapper
+    const suggestionWrapper = document.createElement('div');
+    suggestionWrapper.className = 'suggestion-wrapper';
+    suggestionWrapper.style.cssText = `
+      position: relative;
+      display: inline-block;
+    `;
+    
+    const suggestionBtn = document.createElement('button');
+    suggestionBtn.type = 'button';
+    suggestionBtn.className = 'smart-suggestion suggestion-btn';
+    suggestionBtn.textContent = suggestion.value;
+    suggestionBtn.title = `${suggestion.reason} (${Math.round(suggestion.confidence * 100)}% confidence)`;
+    
+    // Style the suggestion button
+    suggestionBtn.style.cssText = `
+      background: linear-gradient(45deg, #e3f2fd, #bbdefb);
+      border: 1px solid #2196f3;
+      border-radius: 15px;
+      padding: 4px 12px 4px 12px;
+      padding-right: 28px;
+      font-size: 12px;
+      cursor: pointer;
+      color: #1976d2;
+      transition: all 0.2s ease;
+      font-weight: 500;
+      position: relative;
+    `;
+    
+    // Add confidence indicator
+    const confidenceLevel = suggestion.confidence > 0.7 ? 'high' : suggestion.confidence > 0.4 ? 'medium' : 'low';
+    if (confidenceLevel === 'high') {
+      suggestionBtn.style.background = 'linear-gradient(45deg, #e8f5e8, #c8e6c8)';
+      suggestionBtn.style.borderColor = '#4caf50';
+      suggestionBtn.style.color = '#2e7d32';
+    }
+    
+    // Create delete button (X)
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'suggestion-delete-btn';
+    deleteBtn.innerHTML = '×';
+    deleteBtn.title = `Delete suggestion: ${suggestion.value}`;
+    deleteBtn.style.cssText = `
+      position: absolute;
+      top: -3px;
+      right: 2px;
+      width: 16px;
+      height: 16px;
+      border: none;
+      background: #f44336;
+      color: white;
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: bold;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      z-index: 1;
+      transition: all 0.2s ease;
+    `;
+    
+    // Delete button hover effect
+    deleteBtn.addEventListener('mouseenter', () => {
+      deleteBtn.style.background = '#d32f2f';
+      deleteBtn.style.transform = 'scale(1.1)';
+    });
+    
+    deleteBtn.addEventListener('mouseleave', () => {
+      deleteBtn.style.background = '#f44336';
+      deleteBtn.style.transform = 'scale(1)';
+    });
+    
+    // Delete button click handler
+    deleteBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      
+      const confirmed = confirm(`Êtes-vous sûr de vouloir supprimer la suggestion "${suggestion.value}" ?`);
+      if (confirmed) {
+        try {
+          const result = await ipcRenderer.invoke('delete-suggestion', {
+            type: fieldId,
+            value: suggestion.value
+          });
+          
+          if (result.success) {
+            showNotification(`🗑️ Suggestion "${suggestion.value}" supprimée`, 'success', 2000);
+            
+            // Remove the suggestion wrapper from UI
+            suggestionWrapper.style.opacity = '0';
+            suggestionWrapper.style.transform = 'scale(0.8)';
+            setTimeout(() => {
+              suggestionWrapper.remove();
+              
+              // Check if container is empty and remove info text
+              const remainingSuggestions = suggestionsContainer.querySelectorAll('.suggestion-wrapper');
+              if (remainingSuggestions.length === 0) {
+                const infoText = formGroup.querySelector('.suggestions-info');
+                if (infoText) infoText.remove();
+                suggestionsContainer.remove();
+              }
+            }, 200);
+            
+            // Update learning stats
+            await loadLearningStats();
+          } else {
+            showNotification(`Erreur lors de la suppression: ${result.error}`, 'error');
+          }
+        } catch (error) {
+          console.error('Error deleting suggestion:', error);
+          showNotification('Erreur lors de la suppression de la suggestion', 'error');
+        }
+      }
+    });
+    
+    // Suggestion button hover effect
+    suggestionBtn.addEventListener('mouseenter', () => {
+      suggestionBtn.style.transform = 'translateY(-1px)';
+      suggestionBtn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+      deleteBtn.style.opacity = '1';
+    });
+    
+    suggestionBtn.addEventListener('mouseleave', () => {
+      suggestionBtn.style.transform = 'translateY(0)';
+      suggestionBtn.style.boxShadow = 'none';
+    });
+    
+    // Click to apply suggestion
+    suggestionBtn.addEventListener('click', (e) => {
+      // Don't apply if clicking on delete button area
+      if (e.target === deleteBtn) return;
+      
+      field.value = suggestion.value;
+      field.focus();
+      
+      // Show feedback
+      showNotification(`✨ Appliqué: ${suggestion.value}`, 'success', 1500);
+      
+      // Remove suggestions after applying
+      setTimeout(() => {
+        suggestionsContainer.remove();
+        const infoText = formGroup.querySelector('.suggestions-info');
+        if (infoText) infoText.remove();
+      }, 500);
+      
+      // Trigger any change events
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    
+    // Assemble the suggestion
+    suggestionWrapper.appendChild(suggestionBtn);
+    suggestionWrapper.appendChild(deleteBtn);
+    suggestionsContainer.appendChild(suggestionWrapper);
+  });
+  
+  // Add a small info text
+  const infoText = document.createElement('div');
+  infoText.className = 'smart-suggestion suggestions-info';
+  infoText.style.cssText = `
+    font-size: 11px;
+    color: #666;
+    font-style: italic;
+    margin-top: 3px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  `;
+  
+  const leftInfo = document.createElement('span');
+  leftInfo.textContent = `🧠 Suggestions (appris de ${learningStats.totalFiles} fichiers)`;
+  
+  // Add reset button if there are suggestions
+  const resetBtn = document.createElement('button');
+  resetBtn.type = 'button';
+  resetBtn.className = 'reset-memory-btn';
+  resetBtn.textContent = '🗑️ Reset mémoire';
+  resetBtn.title = 'Réinitialiser toute la mémoire des suggestions';
+  resetBtn.style.cssText = `
+    background: #ffebee;
+    border: 1px solid #e57373;
+    border-radius: 10px;
+    padding: 2px 6px;
+    font-size: 10px;
+    color: #c62828;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  `;
+  
+  resetBtn.addEventListener('mouseenter', () => {
+    resetBtn.style.background = '#ffcdd2';
+    resetBtn.style.borderColor = '#f44336';
+  });
+  
+  resetBtn.addEventListener('mouseleave', () => {
+    resetBtn.style.background = '#ffebee';
+    resetBtn.style.borderColor = '#e57373';
+  });
+  
+  resetBtn.addEventListener('click', async () => {
+    const confirmed = confirm(
+      'Êtes-vous sûr de vouloir réinitialiser TOUTE la mémoire des suggestions ?\n\n' +
+      'Cette action supprimera définitivement:\n' +
+      `• ${learningStats.uniqueBrands} marques apprises\n` +
+      `• ${learningStats.uniqueModels} modèles appris\n` +
+      `• ${learningStats.uniqueTypes} types de manuel appris\n` +
+      `• Toutes les associations de ${learningStats.totalFiles} fichiers\n\n` +
+      'Cette action est IRRÉVERSIBLE.'
+    );
+    
+    if (confirmed) {
+      try {
+        const result = await ipcRenderer.invoke('reset-learning-data');
+        if (result.success) {
+          showNotification('🧠 Mémoire des suggestions complètement réinitialisée!', 'success', 3000);
+          
+          // Clear all suggestions from UI
+          document.querySelectorAll('.smart-suggestion').forEach(el => el.remove());
+          
+          // Reset learning stats
+          learningStats = { totalFiles: 0, uniqueBrands: 0, uniqueModels: 0, uniqueTypes: 0 };
+          updateLearningIndicator();
+        } else {
+          showNotification(`Erreur lors de la réinitialisation: ${result.error}`, 'error');
+        }
+      } catch (error) {
+        console.error('Error resetting learning data:', error);
+        showNotification('Erreur lors de la réinitialisation de la mémoire', 'error');
+      }
+    }
+  });
+  
+  infoText.appendChild(leftInfo);
+  infoText.appendChild(resetBtn);
+  
+  formGroup.appendChild(suggestionsContainer);
+  formGroup.appendChild(infoText);
+}
+
+// Add learning indicator to header
+function updateLearningIndicator() {
+  // Remove existing indicator
+  const existingIndicator = document.querySelector('.learning-indicator');
+  if (existingIndicator) {
+    existingIndicator.remove();
+  }
+  
+  if (learningStats.totalFiles > 0) {
+    const header = document.querySelector('.right-panel .panel-header');
+    const indicator = document.createElement('div');
+    indicator.className = 'learning-indicator';
+    indicator.textContent = `🧠 ${learningStats.totalFiles} appris`;
+    indicator.title = `Le système a appris de ${learningStats.totalFiles} fichiers\n${learningStats.uniqueBrands} marques • ${learningStats.uniqueModels} modèles • ${learningStats.uniqueTypes} types`;
+    header.appendChild(indicator);
   }
 }
