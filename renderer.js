@@ -68,19 +68,18 @@ let learningStats = { totalFiles: 0, uniqueBrands: 0, uniqueModels: 0, uniqueTyp
 
 // Initialize the application
 async function initApp() {
-  // Try to load saved directories
-  const directories = await ipcRenderer.invoke('get-manual-directories');
-  
-  if (directories && directories.length > 0) {
-    // Scan the first directory in the list
-    await scanDirectory(directories[0]);
-  }
-  
   // Set up event listeners
   setupEventListeners();
 
   // Load learning statistics on app start
   await loadLearningStats();
+  
+  // Show initial empty state
+  manualsList.innerHTML = `
+    <div class="empty-state">
+      <p>No manuals found</p>
+      <p>Select a folder to scan for PDF manuals</p>
+    </div>`;
 }
 
 // Set up event listeners

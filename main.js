@@ -411,26 +411,39 @@ async function scanDirectoryForPDFs(directoryPath) {
   const pdfFiles = [];
   
   try {
+    // Check if directory exists before trying to read it
+    if (!fs.existsSync(directoryPath)) {
+      console.warn(`Directory does not exist, skipping: ${directoryPath}`);
+      return pdfFiles;
+    }
+
     const items = fs.readdirSync(directoryPath);
     
     for (const item of items) {
       const itemPath = path.join(directoryPath, item);
-      const stats = fs.statSync(itemPath);
       
-      if (stats.isDirectory()) {
-        const subDirPDFs = await scanDirectoryForPDFs(itemPath);
-        pdfFiles.push(...subDirPDFs);
-      } else if (stats.isFile() && path.extname(itemPath).toLowerCase() === '.pdf') {
-        pdfFiles.push({
-          path: itemPath,
-          filename: item,
-          size: stats.size,
-          lastModified: stats.mtime
-        });
+      try {
+        const stats = fs.statSync(itemPath);
+        
+        if (stats.isDirectory()) {
+          const subDirPDFs = await scanDirectoryForPDFs(itemPath);
+          pdfFiles.push(...subDirPDFs);
+        } else if (stats.isFile() && path.extname(itemPath).toLowerCase() === '.pdf') {
+          pdfFiles.push({
+            path: itemPath,
+            filename: item,
+            size: stats.size,
+            lastModified: stats.mtime
+          });
+        }
+      } catch (itemError) {
+        // Skip individual items that can't be accessed (broken symlinks, permission issues, etc.)
+        console.warn(`Skipping inaccessible item: ${itemPath} - ${itemError.message}`);
+        continue;
       }
     }
   } catch (error) {
-    console.error('Error scanning directory:', error);
+    console.error(`Error scanning directory ${directoryPath}:`, error.message);
   }
   
   return pdfFiles;
